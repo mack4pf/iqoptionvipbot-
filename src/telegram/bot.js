@@ -57,7 +57,7 @@ class TelegramBot {
                 if (userId) {
                     ctx.state.user = await this.db.getUser(userId);
 
-                    if (!ctx.state.user && userId === config.telegram.adminId) {
+                    if (!ctx.state.user && config.telegram.adminIds.includes(userId)) {
                         await this.db.ensureAdminUser();
                         ctx.state.user = await this.db.getUser(userId);
                     }
@@ -687,9 +687,10 @@ class TelegramBot {
 
         try { await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); } catch (err) { }
 
-        const adminId = config.telegram.adminId;
-        if (adminId && adminId !== userId) {
-            try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+        for (const adminId of config.telegram.adminIds) {
+            if (adminId && adminId !== userId) {
+                try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+            }
         }
     }
 
@@ -700,9 +701,10 @@ class TelegramBot {
 
         try { await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); } catch (err) { }
 
-        const adminId = config.telegram.adminId;
-        if (adminId && adminId !== userId) {
-            try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+        for (const adminId of config.telegram.adminIds) {
+            if (adminId && adminId !== userId) {
+                try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+            }
         }
     }
 

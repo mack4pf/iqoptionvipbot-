@@ -108,47 +108,47 @@ class MongoDB {
     }
 
     async ensureAdminUser() {
-        const adminId = config.telegram.adminId;
-        if (!adminId) return;
+        if (!config.telegram.adminIds || config.telegram.adminIds.length === 0) return;
 
         try {
             const users = this.db.collection('users');
-            const admin = await users.findOne({ _id: adminId });
+            
+            for (const adminId of config.telegram.adminIds) {
+                if (!adminId) continue;
+                
+                const admin = await users.findOne({ _id: adminId });
 
-            if (!admin) {
-                await users.insertOne({
-                    _id: adminId,
-                    email: 'admin@local',
-                    password_encrypted: 'admin',
-                    account_type: 'PRACTICE',
-                    tradeAmount: 1500,
-                    balance: 0,
-                    copyAdminEnabled: false,
-                    autoTraderEnabled: true,
-                    connected: false,
-                    created_at: new Date(),
-                    last_active: new Date(),
-                    is_admin: true,
-                    access_expires_at: new Date('2099-12-31'),
-                    ssid: null,
-                    ssid_updated_at: null,
-                    stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
-                    martingale: { current_step: 0, current_amount: null, loss_streak: 0, base_amount: null, initial_balance: 0 }
-                });
-                logger.info('✅ Admin user created');
-            } else if (!admin.is_admin) {
-                await users.updateOne(
-                    { _id: adminId },
-                    { $set: { is_admin: true, access_expires_at: new Date('2099-12-31') } }
-                );
-                logger.info('✅ Admin privileges updated');
+                if (!admin) {
+                    await users.insertOne({
+                        _id: adminId,
+                        email: 'admin@local',
+                        password_encrypted: 'admin',
+                        account_type: 'PRACTICE',
+                        tradeAmount: 1500,
+                        balance: 0,
+                        copyAdminEnabled: false,
+                        autoTraderEnabled: true,
+                        connected: false,
+                        created_at: new Date(),
+                        last_active: new Date(),
+                        is_admin: true,
+                        access_expires_at: new Date('2099-12-31'),
+                        ssid: null,
+                        ssid_updated_at: null,
+                        stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
+                        martingale: { current_step: 0, current_amount: null, loss_streak: 0, base_amount: null, initial_balance: 0 }
+                    });
+                    logger.info(`✅ Admin user created: ${adminId}`);
+                } else if (!admin.is_admin) {
+                    await users.updateOne(
+                        { _id: adminId },
+                        { $set: { is_admin: true, access_expires_at: new Date('2099-12-31') } }
+                    );
+                    logger.info(`✅ Admin privileges updated: ${adminId}`);
+                }
             }
         } catch (error) {
-            if (error.code === 11000) {
-                logger.info('✅ Admin user already exists');
-            } else {
-                logger.error('Error ensuring admin user:', error.message);
-            }
+            logger.error('Error ensuring admin users:', error.message);
         }
     }
 

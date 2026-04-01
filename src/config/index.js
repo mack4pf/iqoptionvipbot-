@@ -10,7 +10,7 @@ module.exports = {
     },
     telegram: {
         token: process.env.TELEGRAM_BOT_TOKEN,
-        adminId: process.env.ADMIN_CHAT_ID
+        adminIds: (process.env.ADMIN_CHAT_ID || '').split(',').map(id => id.trim())
     },
     webhook: {
         secret: process.env.SIGNAL_SECRET,
