@@ -14,7 +14,7 @@ module.exports = {
     },
     webhook: {
         secret: process.env.SIGNAL_SECRET,
-        port: process.env.API_PORT || 3000
+        port: process.env.PORT || process.env.API_PORT || 3000
     },
     iqoption: {
         loginUrl: 'https://auth.iqoption.com/api/v1.0/login',

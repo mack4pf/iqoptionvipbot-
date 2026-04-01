@@ -45,29 +45,30 @@ class TradingBot {
         this.signalQueue = new SignalQueue(this);
 
         // ========== AUTO-LOGIN ADMIN ACCOUNT ==========
-        if (config.iqoption.email && config.iqoption.password) {
-            logger.info('🔌 Auto-logging admin account...');
+        const primaryAdminId = config.telegram.adminIds[0];
+        if (primaryAdminId && config.iqoption.email && config.iqoption.password) {
+            logger.info(`🔌 Auto-logging primary admin account (${primaryAdminId})...`);
             try {
                 const adminClient = new IQOptionClient(
                     config.iqoption.email,
                     config.iqoption.password,
-                    config.telegram.adminId,
+                    primaryAdminId,
                     this.db
                 );
                 const loggedIn = await adminClient.login();
                 if (loggedIn) {
                     adminClient.connect();
-                    this.telegramBot.userConnections.set(config.telegram.adminId, adminClient);
+                    this.telegramBot.userConnections.set(primaryAdminId, adminClient);
 
                     // Set up admin trade callbacks
                     adminClient.onTradeOpened = (tradeData) => {
-                        this.telegramBot.handleTradeOpened(config.telegram.adminId, tradeData);
+                        this.telegramBot.handleTradeOpened(primaryAdminId, tradeData);
                     };
                     adminClient.onTradeClosed = (tradeResult) => {
-                        this.telegramBot.handleTradeClosed(config.telegram.adminId, tradeResult);
+                        this.telegramBot.handleTradeClosed(primaryAdminId, tradeResult);
                     };
                     adminClient.onBalanceChanged = ({ amount, currency }) => {
-                        this.db.updateUser(config.telegram.adminId, { balance: amount, currency, connected: true });
+                        this.db.updateUser(primaryAdminId, { balance: amount, currency, connected: true });
                     };
 
                     logger.info('✅ Admin account auto-logged in successfully');
@@ -88,7 +89,7 @@ class TradingBot {
             let connectedCount = 0;
             
             for (const user of users) {
-                if (user.ssid && user._id !== config.telegram.adminId) {
+                if (user.ssid && !config.telegram.adminIds.includes(user._id)) {
                     try {
                         // Skip if access expired
                         const hasAccess = await this.db.hasValidAccess(user._id);
