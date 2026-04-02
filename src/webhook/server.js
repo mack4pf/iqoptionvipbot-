@@ -15,11 +15,10 @@ class WebhookServer {
 
     setupMiddleware() {
         this.app.use(express.json());
-        this.app.use(authenticate);
     }
 
     setupRoutes() {
-        this.app.post('/api/tradingview', async (req, res) => {
+        this.app.post('/api/tradingview', authenticate, async (req, res) => {
             try {
                 const result = await this.signalHandler.handle(req.body);
                 res.json(result);
