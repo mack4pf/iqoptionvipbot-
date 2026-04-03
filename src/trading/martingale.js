@@ -8,32 +8,32 @@ class Martingale {
         this.activeStates = new Map();
     }
 
-    getState(userId, user, currency, baseAmount) {
+    getState(userId, user, currency, baseAmount) {        
         const memoryState = this.activeStates.get(userId);
         if (memoryState && memoryState.baseAmount === baseAmount) {
             return memoryState;
         }
-        
+
         const dbState = user?.martingale || {};
         const losses = dbState.loss_streak || 0;
         const step = Math.min(losses, this.multipliers.length - 1);
         const amount = baseAmount * this.multipliers[step];
-        
+
         const state = {
             step,
             losses,
             baseAmount,
             currentAmount: amount,
             currency,
-            initialBalance: dbState.initial_balance || 0
+            initialBalance: dbState.initial_balance || 0  
         };
-        
+
         this.activeStates.set(userId, state);
         return state;
     }
 
     reset(userId, state) {
-        logger.info(`í´„ User ${userId}: Resetting martingale to base ${state.baseAmount}`);
+        logger.info(`ğŸ”„ User ${userId}: Resetting martingale to base ${state.baseAmount}`);
         state.step = 0;
         state.losses = 0;
         state.currentAmount = state.baseAmount;
@@ -42,19 +42,17 @@ class Martingale {
     }
 
     advance(userId, state) {
-        logger.info(`í³Š User ${userId}: Loss #${state.losses + 1}`);
-        
         state.losses++;
         
         if (state.losses >= this.maxSteps) {
-            logger.info(`í´„ User ${userId}: 8 losses reached - Safety reset`);
+            logger.info(`ğŸš¨ User ${userId}: ${this.maxSteps} losses reached - Safety reset`);
             return this.reset(userId, state);
         }
-        
+
         state.step = Math.min(state.losses, this.multipliers.length - 1);
         state.currentAmount = state.baseAmount * this.multipliers[state.step];
-        
-        logger.info(`í³‰ User ${userId}: Next amount = ${state.currentAmount} (Step ${state.step + 1}/8)`);
+
+        logger.info(`ğŸ“‰ User ${userId}: Next amount = ${state.currentAmount} (Step ${state.step + 1}/${this.maxSteps})`);
         this.activeStates.set(userId, state);
         return state;
     }

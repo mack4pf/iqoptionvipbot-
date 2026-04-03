@@ -291,7 +291,7 @@ class TelegramBot {
             const step = user.martingale?.current_step || 0;
             const losses = user.martingale?.loss_streak || 0;
 
-            const multipliers = [1, 1, 1, 1, 4, 8, 16, 32];
+            const multipliers = config.trading.martingaleMultipliers;
             const sequence = multipliers.map((m, i) => {
                 const amt = baseAmount * m;
                 const isCurrent = i === step && losses > 0;
@@ -303,10 +303,10 @@ class TelegramBot {
                 `━━━━━━━━━━━━━━━\n` +
                 `Status: ${isEnabled ? '✅ ON' : '🔴 OFF'}\n` +
                 `💰 Base: ${symbol}${baseAmount.toLocaleString()}\n` +
-                `📉 Step: ${step + 1}/8 | Losses: ${losses}\n\n` +
+                `📉 Step: ${step + 1}/${config.trading.maxSteps} | Losses: ${losses}\n\n` +
                 `*Sequence:*\n${sequence}\n\n` +
                 `_Win → reset to base_\n` +
-                `_8 losses → auto-reset_`;
+                `_${config.trading.maxSteps} losses → auto-reset_`;
 
             await ctx.reply(message, {
                 parse_mode: 'Markdown',

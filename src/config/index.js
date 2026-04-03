@@ -30,8 +30,8 @@ module.exports = {
         protocol: process.env.IPROYAL_PROTOCOL
     },
     trading: {
-        martingaleMultipliers: [1, 1, 1, 1, 4, 8, 16, 32],
-        maxSteps: 8,
+        martingaleMultipliers: [1, 1, 2, 4, 8],
+        maxSteps: 5,
         cooldownSeconds: 10,
         defaultDuration: 5,
         currencyLimits: {
