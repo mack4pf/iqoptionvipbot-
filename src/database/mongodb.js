@@ -32,6 +32,7 @@ class MongoDB {
         const channels = this.db.collection('signal_channels');
         const trades = this.db.collection('trades');
         const settings = this.db.collection('settings');
+        const accounts = this.db.collection('accounts');
 
         // Users collection indexes - with error handling
         try {
@@ -102,6 +103,14 @@ class MongoDB {
             await settings.createIndex({ key: 1 }, { unique: true });
         } catch (err) {
             if (err.code !== 86) logger.warn('Settings key index error:', err.message);
+        }
+
+        // Accounts collection indexes
+        try {
+            await accounts.createIndex({ owner_id: 1 });
+            await accounts.createIndex({ email: 1 }, { unique: true });
+        } catch (err) {
+            if (err.code !== 86) logger.warn('Accounts index error:', err.message);
         }
 
         logger.info('✅ Database indexes verified');
@@ -196,6 +205,71 @@ class MongoDB {
             { _id: chatId.toString() },
             { $set: { ssid: null, connected: false } }
         );
+    }
+
+    // --- Account Management Methods ---
+
+    async addAccount(ownerId, email, password, accountType = 'PRACTICE', tradeAmount = 1500) {
+        const accounts = this.db.collection('accounts');
+        const account = {
+            owner_id: ownerId.toString(),
+            email,
+            password_encrypted: encrypt(password),
+            account_type: accountType,
+            tradeAmount,
+            balance: 0,
+            connected: false,
+            created_at: new Date(),
+            last_active: new Date(),
+            ssid: null,
+            ssid_updated_at: null,
+            stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
+            martingale: { current_step: 0, current_amount: null, loss_streak: 0, base_amount: tradeAmount, initial_balance: 0 }
+        };
+        await accounts.updateOne(
+            { email },
+            { $set: account },
+            { upsert: true }
+        );
+        return account;
+    }
+
+    async getAccounts(ownerId) {
+        const accounts = this.db.collection('accounts');
+        return await accounts.find({ owner_id: ownerId.toString() }).toArray();
+    }
+
+    async getAllAccounts() {
+        const accounts = this.db.collection('accounts');
+        return await accounts.find({}).toArray();
+    }
+
+    async updateAccount(email, updates) {
+        const accounts = this.db.collection('accounts');
+        updates.last_active = new Date();
+        return await accounts.updateOne(
+            { email },
+            { $set: updates }
+        );
+    }
+
+    async deleteAccount(email) {
+        const accounts = this.db.collection('accounts');
+        return await accounts.deleteOne({ email });
+    }
+
+    async storeAccountSsid(email, ssid) {
+        const accounts = this.db.collection('accounts');
+        return await accounts.updateOne(
+            { email },
+            { $set: { ssid, ssid_updated_at: new Date(), connected: true } }
+        );
+    }
+
+    async getAccountSsid(email) {
+        const accounts = this.db.collection('accounts');
+        const acc = await accounts.findOne({ email });
+        return acc?.ssid || null;
     }
 
     async hasValidSession(chatId) {

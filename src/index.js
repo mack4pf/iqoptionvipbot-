@@ -64,11 +64,15 @@ class TradingBot {
                     adminClient.onTradeOpened = (tradeData) => {
                         this.telegramBot.handleTradeOpened(primaryAdminId, tradeData);
                     };
-                    adminClient.onTradeClosed = (tradeResult) => {
+                    adminClient.onTradeClosed = async (tradeResult) => {
                         this.telegramBot.handleTradeClosed(primaryAdminId, tradeResult);
+                        try {
+                            const user = await this.db.getUser(primaryAdminId);
+                            await this.tradeExecutor.handleResult(primaryAdminId, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, user);
+                        } catch (err) { logger.error('Martingale update error:', err.message); }
                     };
-                    adminClient.onBalanceChanged = ({ amount, currency }) => {
-                        this.db.updateUser(primaryAdminId, { balance: amount, currency, connected: true });
+                    adminClient.onBalanceChanged = ({ amount, currency, type }) => {
+                        this.db.updateUser(primaryAdminId, { balance: amount, currency, account_type: type, connected: true });
                     };
 
                     logger.info('✅ Admin account auto-logged in successfully');
@@ -104,11 +108,15 @@ class TradingBot {
                             client.onTradeOpened = (tradeData) => {
                                 this.telegramBot.handleTradeOpened(user._id, tradeData);
                             };
-                            client.onTradeClosed = (tradeResult) => {
+                            client.onTradeClosed = async (tradeResult) => {
                                 this.telegramBot.handleTradeClosed(user._id, tradeResult);
+                                try {
+                                    const u = await this.db.getUser(user._id);
+                                    await this.tradeExecutor.handleResult(user._id, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, u);
+                                } catch (err) { logger.error('Martingale update error:', err.message); }
                             };
-                            client.onBalanceChanged = ({ amount, currency }) => {
-                                this.db.updateUser(user._id, { balance: amount, currency, connected: true });
+                            client.onBalanceChanged = ({ amount, currency, type }) => {
+                                this.db.updateUser(user._id, { balance: amount, currency, account_type: type, connected: true });
                             };
                             
                             connectedCount++;
@@ -121,8 +129,49 @@ class TradingBot {
                 }
             }
             logger.info(`✅ Auto-connected ${connectedCount} users`);
+
+            // ========== AUTO-LOGIN SUB-ACCOUNTS ==========
+            logger.info('👥 Auto-connecting sub-accounts from database...');
+            const subAccounts = await this.db.getAllAccounts();
+            let subConnectedCount = 0;
+            
+            for (const acc of subAccounts) {
+                if (acc.ssid) {
+                    try {
+                        const client = new IQOptionClient(acc.email, 'RESTORED_SESSION', acc.owner_id, this.db);
+                        const loggedIn = await client.login(true);
+                        
+                        if (loggedIn) {
+                            this.telegramBot.userConnections.set(acc.email, client);
+                            
+                            client.onTradeOpened = (tradeData) => this.telegramBot.handleTradeOpened(acc.owner_id, tradeData, acc.email);
+                            client.onTradeClosed = async (tradeResult) => {
+                                this.telegramBot.handleTradeClosed(acc.owner_id, tradeResult, acc.email);
+                                try {
+                                    // Fetch the latest account data for this specific sub-account
+                                    const accounts = await this.db.getAccounts(acc.owner_id);
+                                    const accountData = accounts.find(a => a.email === acc.email);
+                                    if (accountData) {
+                                        await this.tradeExecutor.handleResult(acc.owner_id, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, accountData);
+                                    }
+                                } catch (err) { logger.error(`Martingale update error for ${acc.email}:`, err.message); }
+                            };
+                            client.onBalanceChanged = ({ amount, currency, type }) => {
+                                this.db.updateAccount(acc.email, { balance: amount, currency, account_type: type, connected: true });
+                            };
+                            
+                            subConnectedCount++;
+                            await new Promise(resolve => setTimeout(resolve, 250)); 
+                        }
+                    } catch (err) {
+                        logger.warn(`Failed to auto-connect sub-account ${acc.email}: ${err.message}`);
+                    }
+                }
+            }
+            logger.info(`✅ Auto-connected ${subConnectedCount} sub-accounts`);
+
         } catch (error) {
-            logger.error('Error auto-connecting users', error);
+            logger.error('Error auto-connecting users/accounts', error);
         }
 
         // Initialize Webhook Server
@@ -174,32 +223,43 @@ class TradingBot {
         
         for (let i = 0; i < clients.length; i += batchSize) {
             const batch = clients.slice(i, i + batchSize);
-            const batchPromises = batch.map(({ userId, client }) => {
+            const batchPromises = batch.map(({ userId, client, email }, index) => {
                 return (async () => {
-                    if (this.userLocks.has(userId)) {
-                        logger.info(`⏸️ User ${userId} already processing a trade`);
+                    const lockKey = email || userId;
+                    if (this.userLocks.has(lockKey)) {
+                        logger.info(`⏸️ Account ${lockKey} already processing a trade`);
                         return;
                     }
 
-                    this.userLocks.add(userId);
+                    this.userLocks.add(lockKey);
 
                     try {
-                        const user = await this.db.getUser(userId);
-                        if (user && !user.autoTraderEnabled) {
-                            logger.info(`⏸️ User ${userId} has auto-trader disabled`);
+                        // Stagger trade placements within the batch (10ms delay per account) to avoid anti-bot detection
+                        if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
+
+                        let accountData = null;
+                        if (email) {
+                            const accounts = await this.db.getAccounts(userId);
+                            accountData = accounts.find(a => a.email === email);
+                        } else {
+                            accountData = await this.db.getUser(userId);
+                        }
+
+                        if (accountData && accountData.autoTraderEnabled === false) {
+                            logger.info(`⏸️ Account ${email || userId} has auto-trader disabled`);
                             return;
                         }
 
-                        const result = await this.tradeExecutor.execute(userId, client, signal, user);
+                        const result = await this.tradeExecutor.execute(userId, client, signal, accountData || {});
                         if (result.success) {
-                            logger.info(`✅ Trade placed for user ${userId}: ${result.amount}`);
+                            logger.info(`✅ Trade placed for ${email || userId}: ${result.amount}`);
                         } else {
-                            logger.info(`❌ Trade failed for user ${userId}: ${result.error}`);
+                            logger.info(`❌ Trade failed for ${email || userId}: ${result.error}`);
                         }
                     } catch (error) {
-                        logger.error(`Error for user ${userId}:`, error.message);
+                        logger.error(`Error for ${email || userId}:`, error.message);
                     } finally {
-                        this.userLocks.delete(userId);
+                        this.userLocks.delete(lockKey);
                     }
                 })();
             });

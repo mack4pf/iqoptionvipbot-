@@ -10,38 +10,40 @@ class TradeExecutor {
         this.cooldownSeconds = 10;
     }
 
-    async execute(userId, client, signal, user) {
-        if (this.openPositions.has(userId)) {
-            logger.info(`⏸️ User ${userId}: Open position exists - blocking`);
-            return { success: false, error: 'User has open position' };
+    async execute(userId, client, signal, account) {
+        const accountKey = client.email || userId;
+        
+        if (this.openPositions.has(accountKey)) {
+            logger.info(`⏸️ Account ${accountKey}: Open position exists - blocking`);
+            return { success: false, error: 'Account has open position' };
         }
         
-        if (this.lastTradeCloseTime.has(userId)) {
-            const timeSince = Date.now() - this.lastTradeCloseTime.get(userId);
+        if (this.lastTradeCloseTime.has(accountKey)) {
+            const timeSince = Date.now() - this.lastTradeCloseTime.get(accountKey);
             if (timeSince < this.cooldownSeconds * 1000) {
-                logger.info(`⏸️ User ${userId}: Cooldown active`);
+                logger.info(`⏸️ Account ${accountKey}: Cooldown active`);
                 return { success: false, error: 'Cooldown active' };
             }
         }
         
-        const martingaleEnabled = user?.martingale_enabled !== false;
-        const currency = client?.currency || user?.currency || 'USD';
+        const martingaleEnabled = account?.martingale_enabled !== false;
+        const currency = client?.currency || account?.currency || 'USD';
         
         let tradeAmount;
         
         if (martingaleEnabled) {
-            const baseAmount = user?.tradeAmount || 1500;
-            const state = this.martingale.getState(userId, user, currency, baseAmount);
+            const baseAmount = account?.tradeAmount || 1500;
+            const state = this.martingale.getState(accountKey, account, currency, baseAmount);
             tradeAmount = state.currentAmount;
         } else {
-            tradeAmount = user?.tradeAmount || 1500;
+            tradeAmount = account?.tradeAmount || 1500;
         }
         
         if (client.balance < tradeAmount) {
             return { success: false, error: `Insufficient balance: ${client.balance} < ${tradeAmount}` };
         }
         
-        logger.info(`��� User ${userId}: Placing ${signal.direction} trade - ${tradeAmount}`);
+        logger.info(`🚀 Account ${accountKey}: Placing ${signal.direction} trade - ${tradeAmount}`);
         
         const result = await client.placeTrade({
             asset: signal.asset,
@@ -54,47 +56,53 @@ class TradeExecutor {
             return { success: false, error: result.error };
         }
         
-        this.openPositions.set(userId, result.tradeId);
+        this.openPositions.set(accountKey, result.tradeId);
         
         return {
             success: true,
             tradeId: result.tradeId,
             amount: tradeAmount,
-            martingaleEnabled
+            martingaleEnabled,
+            email: client.email
         };
     }
     
-    async handleResult(userId, position, tradeInfo, user) {
+    async handleResult(userId, position, tradeInfo, account) {
+        const accountKey = tradeInfo.email || userId;
         const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
         const investment = position.invest || tradeInfo.amount;
         
-        this.openPositions.delete(userId);
-        this.lastTradeCloseTime.set(userId, Date.now());
+        this.openPositions.delete(accountKey);
+        this.lastTradeCloseTime.set(accountKey, Date.now());
         
-        const martingaleEnabled = user?.martingale_enabled !== false;
+        const martingaleEnabled = account?.martingale_enabled !== false;
         
         if (martingaleEnabled) {
-            const baseAmount = user?.tradeAmount || 1500;
-            const state = this.martingale.getState(userId, user, tradeInfo.currency, baseAmount);
+            const baseAmount = account?.tradeAmount || 1500;
+            const state = this.martingale.getState(accountKey, account, tradeInfo.currency, baseAmount);
             
             if (isWin) {
-                this.martingale.reset(userId, state);
+                this.martingale.reset(accountKey, state);
             } else {
-                this.martingale.advance(userId, state);
+                this.martingale.advance(accountKey, state);
             }
             
-            await this.db.updateUser(userId, {
-                martingale: {
-                    current_step: state.step,
-                    current_amount: state.currentAmount,
-                    loss_streak: state.losses,
-                    base_amount: state.baseAmount,
-                    initial_balance: state.initialBalance
-                }
-            });
+            const martingaleUpdate = {
+                current_step: state.step,
+                current_amount: state.currentAmount,
+                loss_streak: state.losses,
+                base_amount: state.baseAmount,
+                initial_balance: state.initialBalance
+            };
+
+            if (tradeInfo.email) {
+                await this.db.updateAccount(tradeInfo.email, { martingale: martingaleUpdate });
+            } else {
+                await this.db.updateUser(userId, { martingale: martingaleUpdate });
+            }
         }
         
-        const stats = user?.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
+        const stats = account?.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
         stats.total_trades++;
         
         let profit = 0;
@@ -108,24 +116,29 @@ class TradeExecutor {
             stats.total_profit -= investment;
         }
         
-        await this.db.updateUser(userId, { stats });
+        if (tradeInfo.email) {
+            await this.db.updateAccount(tradeInfo.email, { stats });
+        } else {
+            await this.db.updateUser(userId, { stats });
+        }
         
         if (this.telegramBot) {
-            await this.telegramBot.sendTradeResult(userId, {
+            await this.telegramBot.handleTradeClosed(userId, {
                 isWin,
                 investment,
                 profit,
                 currency: tradeInfo.currency,
-                step: user?.martingale?.current_step || 0,
-                losses: user?.martingale?.loss_streak || 0
-            });
+                asset: tradeInfo.asset,
+                direction: tradeInfo.direction,
+                tradeId: tradeInfo.tradeId
+            }, tradeInfo.email);
         }
         
         return { isWin, investment, profit };
     }
     
-    clearOpenPosition(userId) {
-        this.openPositions.delete(userId);
+    clearOpenPosition(accountKey) {
+        this.openPositions.delete(accountKey);
     }
 }
 

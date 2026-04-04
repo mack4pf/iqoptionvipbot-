@@ -59,17 +59,23 @@ class IQOptionClient {
 
     // Try to restore session from stored SSID
     async restoreSession() {
-        if (!this.db || !this.chatId) return false;
+        if (!this.db) return false;
 
         try {
-            const ssid = await this.db.getUserSsid(this.chatId);
+            let ssid = null;
+            if (this.chatId && !this.email.includes('@')) { // Backward compatibility
+                ssid = await this.db.getUserSsid(this.chatId);
+            } else {
+                ssid = await this.db.getAccountSsid(this.email);
+            }
+            
             if (!ssid) return false;
 
             this.ssid = ssid;
-            logger.info(`✅ User ${this.chatId}: Session restored`);
+            logger.info(`✅ Account ${this.email}: Session restored`);
             return true;
         } catch (error) {
-            logger.warn(`⚠️ User ${this.chatId}: Session restore failed: ${error.message}`);
+            logger.warn(`⚠️ Account ${this.email}: Session restore failed: ${error.message}`);
             return false;
         }
     }
@@ -128,12 +134,16 @@ class IQOptionClient {
                 this.ssid = response.data.data.ssid;
 
                 // Store SSID in database
-                if (this.db && this.chatId) {
-                    await this.db.storeUserSsid(this.chatId, this.ssid);
-                    logger.info(`💾 SSID stored for user ${this.chatId}`);
+                if (this.db) {
+                    if (this.chatId && !this.email.includes('@')) {
+                        await this.db.storeUserSsid(this.chatId, this.ssid);
+                    } else {
+                        await this.db.storeAccountSsid(this.email, this.ssid);
+                    }
+                    logger.info(`💾 SSID stored for account ${this.email}`);
                 }
 
-                logger.info(`✅ User ${this.chatId} login successful`);
+                logger.info(`✅ Account ${this.email} login successful`);
 
                 // Connect WebSocket
                 this.connect();
@@ -149,17 +159,23 @@ class IQOptionClient {
     }
 
     async logout() {
-        if (this.db && this.chatId) {
-            await this.db.clearUserSsid(this.chatId);
-            logger.info(`🗑️ SSID cleared for user ${this.chatId}`);
+        if (this.db) {
+            if (this.chatId && !this.email.includes('@')) {
+                await this.db.clearUserSsid(this.chatId);
+            } else {
+                await this.db.updateAccount(this.email, { ssid: null, connected: false });
+            }
+            logger.info(`🗑️ SSID cleared for account ${this.email}`);
         }
 
         if (this.ws) {
+            // Remove event listeners before closing to prevent unwanted reconnection attempts
+            this.ws.removeAllListeners('close');
             this.ws.close();
             this.connected = false;
         }
 
-        logger.info(`👋 User ${this.chatId} logged out`);
+        logger.info(`👋 Account ${this.email} logged out`);
     }
 
     connect() {
