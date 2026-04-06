@@ -239,6 +239,11 @@ class MongoDB {
         return await accounts.find({ owner_id: ownerId.toString() }).toArray();
     }
 
+    async getAccountByEmail(email) {
+        const accounts = this.db.collection('accounts');
+        return await accounts.findOne({ email: email.toLowerCase() });
+    }
+
     async getAllAccounts() {
         const accounts = this.db.collection('accounts');
         return await accounts.find({}).toArray();

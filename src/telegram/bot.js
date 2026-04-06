@@ -247,17 +247,33 @@ class TelegramBot {
 
         // STATUS COMMAND
         this.bot.command('status', async (ctx) => {
-            const client = this.userConnections.get(ctx.from.id);
-            const connected = client?.connected || false;
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) {
+                return ctx.reply('❌ Not connected. Use /login first.');
+            }
+
             const user = ctx.state.user;
             const expires = user?.access_expires_at ? new Date(user.access_expires_at).toLocaleDateString() : 'N/A';
 
-            let message = `📊 *Connection Status*\n━━━━━━━━━━━━━━━\n`;
-            message += `🔌 IQ Option: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
-            if (connected && client) {
+            let message = `📊 *Connection Status*\n━━━━━━━━━━━━━━━\n\n`;
+            
+            for (const client of userAccounts) {
+                // Determine connection status by WebSocket readyState
+                let connected = false;
+                if (client && client.ws) {
+                    const state = client.ws.readyState;
+                    if (state === 1) connected = true; // WebSocket.OPEN
+                }
+                
+                if (connected) client.refreshProfile(); // Refresh confirm connection
+
+                const symbol = getCurrencySymbol(client.currency);
+                message += `📧 *${client.email}*\n`;
+                message += `🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
                 message += `💳 Account: ${client.accountType}\n`;
-                message += `💰 Balance: ${getCurrencySymbol(client.currency)}${client.balance.toLocaleString()}\n`;
+                message += `💰 Balance: ${symbol}${client.balance.toLocaleString()}\n\n`;
             }
+            
             message += `📅 Access Expires: ${expires}\n`;
 
             await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -284,7 +300,8 @@ class TelegramBot {
             const user = ctx.state.user;
             if (!user) return ctx.reply('❌ Please login first');
 
-            const client = this.userConnections.get(ctx.from.id);
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            const client = userAccounts.find(c => c.email === user.email) || userAccounts[0];
             const isEnabled = user.martingale_enabled !== false;
             const currency = client?.currency || user?.currency || 'USD';
             const symbol = getCurrencySymbol(currency);
@@ -320,21 +337,25 @@ class TelegramBot {
 
         // ACCOUNT SWITCHING
         this.bot.command('practice', async (ctx) => {
-            const client = this.userConnections.get(ctx.from.id);
-            if (!client) return ctx.reply('❌ Please /login first');
-            client.accountType = 'PRACTICE';
-            client.refreshProfile();
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) return ctx.reply('❌ Please /login first');
+            
+            for (const client of userAccounts) {
+                client.accountType = 'PRACTICE';
+                client.refreshProfile();
+                await this.db.updateAccount(client.email, { account_type: 'PRACTICE' });
+            }
+            
+            // Update main user record preference too
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const symbol = getCurrencySymbol(client.currency);
-            ctx.reply(`✅ Switched to PRACTICE account\n💰 Balance: ${symbol}${client.balance.toLocaleString()}`);
+            ctx.reply(`✅ Switched ${userAccounts.length} accounts to PRACTICE account`);
         });
 
         this.bot.command('real', async (ctx) => {
-            const client = this.userConnections.get(ctx.from.id);
-            if (!client) return ctx.reply('❌ Please /login first');
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) return ctx.reply('❌ Please /login first');
             await ctx.reply(
-                '⚠️ *WARNING: Switching to REAL account*\n\nThis uses real money. Are you sure?',
+                `⚠️ *WARNING: Switching ${userAccounts.length} accounts to REAL*\n\nThis uses real money. Are you sure?`,
                 { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Yes', 'confirm_real'), Markup.button.callback('❌ Cancel', 'cancel_real')]]) }
             );
         });
@@ -632,14 +653,16 @@ class TelegramBot {
 
         this.bot.action('confirm_real', async (ctx) => {
             await ctx.answerCbQuery();
-            const client = this.userConnections.get(ctx.from.id);
-            if (!client) return ctx.reply('❌ Please /login first');
-            client.accountType = 'REAL';
-            client.refreshProfile();
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
+
+            for (const client of userAccounts) {
+                client.accountType = 'REAL';
+                client.refreshProfile();
+                await this.db.updateAccount(client.email, { account_type: 'REAL' });
+            }
             await this.db.updateUser(ctx.from.id, { account_type: 'REAL' });
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const symbol = getCurrencySymbol(client.currency);
-            ctx.reply(`✅ Switched to REAL account\n💰 Balance: ${symbol}${client.balance.toLocaleString()}`);
+            ctx.reply(`✅ Switched ${userAccounts.length} accounts to REAL`);
         });
 
         this.bot.action('cancel_real', async (ctx) => {
@@ -657,12 +680,17 @@ class TelegramBot {
         });
 
         this.bot.hears('💰 Balance', async (ctx) => {
-            const client = this.userConnections.get(ctx.from.id);
-            if (!client || !client.connected) return ctx.reply('❌ Not connected');
-            client.refreshProfile();
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const symbol = getCurrencySymbol(client.currency);
-            ctx.reply(`💰 Balance: ${symbol}${client.balance.toLocaleString()}`);
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
+            
+            let msg = `💰 *Balances*\n`;
+            for (const client of userAccounts) {
+                client.refreshProfile();
+                await new Promise(resolve => setTimeout(resolve, 200));
+                const symbol = getCurrencySymbol(client.currency);
+                msg += `\n📧 ${client.email}: ${symbol}${client.balance.toLocaleString()}`;
+            }
+            ctx.reply(msg);
         });
 
         this.bot.hears('📊 My Stats', async (ctx) => {
@@ -702,8 +730,15 @@ class TelegramBot {
         });
 
         this.bot.hears('🔌 Status', async (ctx) => {
-            const client = this.userConnections.get(ctx.from.id);
-            ctx.reply(`🔌 Status: ${client?.connected ? '✅ Connected' : '❌ Disconnected'}`);
+            const userAccounts = this.getClientsByUserId(ctx.from.id);
+            if (userAccounts.length === 0) return ctx.reply('❌ No connections');
+            
+            let msg = `🔌 *Connection Status*\n`;
+            for (const client of userAccounts) {
+                const connected = client?.ws?.readyState === 1;
+                msg += `\n📧 ${client.email}: ${connected ? '✅ Connected' : '❌ Disconnected'}`;
+            }
+            ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
         // ================== ADMIN MENU HANDLERS ===================
@@ -747,6 +782,32 @@ class TelegramBot {
             if (activeUsers.length === 0) return ctx.reply('👥 No users.');
             const buttons = activeUsers.map(user => [Markup.button.callback(`❌ ${user.email.split('@')[0]}`, `revoke_${user._id}`)]);
             ctx.reply('🔴 *Select user to revoke:*', { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+        });
+
+        this.bot.command('statusaccount', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) return ctx.reply('❌ *Usage:* `/statusaccount email`');
+
+            const email = args[1].toLowerCase();
+            const account = await this.db.getAccountByEmail(email);
+            if (!account) return ctx.reply(`❌ No account found with email: ${email}`);
+
+            const client = this.userConnections.get(email);
+            let connected = false;
+            if (client && client.ws) {
+                connected = client.ws.readyState === 1; // WebSocket.OPEN
+            }
+
+            const symbol = getCurrencySymbol(account.currency || 'USD');
+            let msg = `📊 *Account Status*\n\n`;
+            msg += `📧 Email: \`${email}\`\n`;
+            msg += `🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
+            msg += `💳 Mode: ${account.account_type || 'PRACTICE'}\n`;
+            msg += `💰 Balance: ${symbol}${account.balance?.toLocaleString() || 0}\n`;
+            msg += `📈 Trade Amt: ${symbol}${account.tradeAmount || 1500}\n`;
+
+            await ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
         this.bot.hears('📢 Add Channel', async (ctx) => {
