@@ -17,7 +17,7 @@ class IQOptionClient {
         this.pingInterval = null;
 
         // Account info
-        this.accountType = 'PRACTICE';
+        this.accountType = 'REAL';
         this.balance = 0;
         this.currency = 'USD';
         this.balanceId = null;

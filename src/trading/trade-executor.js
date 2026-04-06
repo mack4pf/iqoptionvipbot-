@@ -30,14 +30,19 @@ class TradeExecutor {
         const currency = client?.currency || account?.currency || 'USD';
         
         let tradeAmount;
+        console.log(`🔍 Amount Determination for ${accountKey}: account.tradeAmount=${account?.tradeAmount}, currency=${currency}`);
         
         if (martingaleEnabled) {
             const baseAmount = account?.tradeAmount || 1500;
             const state = this.martingale.getState(accountKey, account, currency, baseAmount);
             tradeAmount = state.currentAmount;
+            console.log(`🔍 Martingale Enabled: state.currentAmount=${tradeAmount}, state.step=${state.step}`);
         } else {
             tradeAmount = account?.tradeAmount || 1500;
+            console.log(`🔍 Martingale Disabled: using direct amount=${tradeAmount}`);
         }
+        
+        console.log(`💸 Final trade amount for ${accountKey}: ${tradeAmount}`);
         
         if (client.balance < tradeAmount) {
             return { success: false, error: `Insufficient balance: ${client.balance} < ${tradeAmount}` };

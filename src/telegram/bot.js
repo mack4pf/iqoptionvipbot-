@@ -176,6 +176,10 @@ class TelegramBot {
                         ctx.session.pendingCode = null;
                     }
 
+                    // Force REAL account by default
+                    iqClient.accountType = 'REAL';
+                    iqClient.refreshProfile();
+
                     // Set up callbacks
                     iqClient.onTradeOpened = (tradeData) => {
                         this.handleTradeOpened(ctx.from.id, tradeData);
@@ -290,9 +294,21 @@ class TelegramBot {
             }
             const amount = parseFloat(args[1]);
             if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Enter a valid amount');
-            await this.db.updateUser(ctx.from.id, { tradeAmount: amount });
+            
+            await this.db.updateUser(ctx.from.id, { 
+                tradeAmount: amount,
+                'martingale.base_amount': amount 
+            });
+            
             const symbol = getCurrencySymbol(ctx.state.user.currency || 'USD');
-            ctx.reply(`✅ Trade amount set to ${symbol}${amount}`);
+            ctx.reply(`✅ Trade amount set to ${symbol}${amount} (Martingale base reset)`);
+        });
+
+        this.bot.command('stopnotifications', async (ctx) => {
+            if (!ctx.state.user) return ctx.reply('❌ Please login first.');
+            const current = ctx.state.user.notifications_enabled !== false;
+            await this.db.updateUser(ctx.from.id, { notifications_enabled: !current });
+            ctx.reply(current ? '🔕 Notifications stopped. You will no longer receive trade alerts.' : '🔔 Notifications resumed.');
         });
 
         // MARTINGALE COMMAND
@@ -503,6 +519,10 @@ class TelegramBot {
                         await ctx.deleteMessage(statusMsg.message_id);
                         return ctx.reply(`❌ Login failed for ${email}`);
                     }
+
+                    // Force REAL account by default
+                    iqClient.accountType = 'REAL';
+                    iqClient.refreshProfile();
 
                     // Store in accounts collection
                     await this.db.addAccount(ctx.from.id, email, password);
@@ -837,7 +857,7 @@ class TelegramBot {
 
     async handleTradeOpened(userId, tradeData, accountEmail = null) {
         const user = await this.db.getUser(userId);
-        if (!user) return;
+        if (!user || user.notifications_enabled === false) return;
         
         const client = accountEmail ? this.userConnections.get(accountEmail) : this.getClientsByUserId(userId)[0];
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
@@ -848,14 +868,17 @@ class TelegramBot {
 
         for (const adminId of config.telegram.adminIds) {
             if (adminId && adminId !== userId) {
-                try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                const admin = await this.db.getUser(adminId);
+                if (admin && admin.notifications_enabled !== false) {
+                    try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                }
             }
         }
     }
 
     async handleTradeClosed(userId, tradeResult, accountEmail = null) {
         const user = await this.db.getUser(userId);
-        if (!user) return;
+        if (!user || user.notifications_enabled === false) return;
         
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
         const message = `${tradeResult.isWin ? '✅' : '❌'} *${tradeResult.isWin ? 'WIN' : 'LOSS'}*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeResult.asset}\n💰 P&L: ${tradeResult.profit}`;
@@ -864,7 +887,10 @@ class TelegramBot {
 
         for (const adminId of config.telegram.adminIds) {
             if (adminId && adminId !== userId) {
-                try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                const admin = await this.db.getUser(adminId);
+                if (admin && admin.notifications_enabled !== false) {
+                    try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                }
             }
         }
     }

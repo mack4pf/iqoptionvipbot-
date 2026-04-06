@@ -132,11 +132,12 @@ class MongoDB {
                         _id: adminId,
                         email: 'admin@local',
                         password_encrypted: 'admin',
-                        account_type: 'PRACTICE',
+                        account_type: 'REAL',
                         tradeAmount: 1500,
                         balance: 0,
                         copyAdminEnabled: false,
                         autoTraderEnabled: true,
+                        notifications_enabled: true,
                         connected: false,
                         created_at: new Date(),
                         last_active: new Date(),
@@ -209,7 +210,7 @@ class MongoDB {
 
     // --- Account Management Methods ---
 
-    async addAccount(ownerId, email, password, accountType = 'PRACTICE', tradeAmount = 1500) {
+    async addAccount(ownerId, email, password, accountType = 'REAL', tradeAmount = 1500) {
         const accounts = this.db.collection('accounts');
         const account = {
             owner_id: ownerId.toString(),
@@ -360,10 +361,11 @@ class MongoDB {
             _id: chatId.toString(),
             email,
             password_encrypted: encrypt(password),
-            account_type: 'PRACTICE',
+            account_type: 'REAL',
             tradeAmount: 1500,
             copyAdminEnabled: false,
             autoTraderEnabled: true,
+            notifications_enabled: true,
             balance: 0,
             connected: false,
             created_at: new Date(),
@@ -444,6 +446,24 @@ class MongoDB {
             { upsert: true }
         );
         return true;
+    }
+
+    async migrateRealAndNotifications() {
+        try {
+            const users = this.db.collection('users');
+            const accounts = this.db.collection('accounts');
+            
+            // Update account_type to REAL for existing users and accounts
+            await users.updateMany({ account_type: 'PRACTICE' }, { $set: { account_type: 'REAL' } });
+            await accounts.updateMany({ account_type: 'PRACTICE' }, { $set: { account_type: 'REAL' } });
+            
+            // Add notifications_enabled to all existing users
+            await users.updateMany({ notifications_enabled: { $exists: false } }, { $set: { notifications_enabled: true } });
+            
+            logger.info('✅ Database migration for REAL account and notifications successful');
+        } catch (error) {
+            logger.error('❌ Migration failed:', error.message);
+        }
     }
 
     async close() {
