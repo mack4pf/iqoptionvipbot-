@@ -230,20 +230,25 @@ class TelegramBot {
         // BALANCE COMMAND
         this.bot.command('balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
-            if (userAccounts.length === 0) {
-                return ctx.reply('❌ Not connected. Use /login first.');
-            }
+            if (userAccounts.length === 0) return ctx.reply('❌ Not connected. Use /login first.');
 
-            let message = `💰 *Account Balances*\n━━━━━━━━━━━━━━━\n`;
+            let message = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
             
             for (const client of userAccounts) {
-                // Force a profile refresh to get latest balances
-                client.refreshProfile();
-                await new Promise(resolve => setTimeout(resolve, 500));
+                const connected = client?.ws?.readyState === 1;
+                if (connected) {
+                    client.refreshProfile();
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
 
-                const currentSymbol = getCurrencySymbol(client.currency);
-                message += `\n📧 *${client.email}* (${client.accountType})\n`;
-                message += `Balance: ${currentSymbol}${client.balance.toLocaleString()}\n`;
+                const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
+                const status = connected ? '🟢 Connected' : '🔴 Disconnected';
+                
+                message += `\n📧 *${client.email}*\n`;
+                message += `📡 Status: ${status}\n`;
+                message += `💵 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n`;
+                if (!connected) message += `⚠️ _(Using last known balance)_ \n`;
+                message += `━━━━━━━━━━━━━━━\n`;
             }
 
             await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -252,9 +257,7 @@ class TelegramBot {
         // STATUS COMMAND
         this.bot.command('status', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
-            if (userAccounts.length === 0) {
-                return ctx.reply('❌ Not connected. Use /login first.');
-            }
+            if (userAccounts.length === 0) return ctx.reply('❌ Not connected. Use /login first.');
 
             const user = ctx.state.user;
             const expires = user?.access_expires_at ? new Date(user.access_expires_at).toLocaleDateString() : 'N/A';
@@ -262,20 +265,15 @@ class TelegramBot {
             let message = `📊 *Connection Status*\n━━━━━━━━━━━━━━━\n\n`;
             
             for (const client of userAccounts) {
-                // Determine connection status by WebSocket readyState
-                let connected = false;
-                if (client && client.ws) {
-                    const state = client.ws.readyState;
-                    if (state === 1) connected = true; // WebSocket.OPEN
-                }
-                
-                if (connected) client.refreshProfile(); // Refresh confirm connection
+                const connected = client?.ws?.readyState === 1;
+                if (connected) client.refreshProfile();
 
-                const symbol = getCurrencySymbol(client.currency);
+                const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
                 message += `📧 *${client.email}*\n`;
                 message += `🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
-                message += `💳 Account: ${client.accountType}\n`;
-                message += `💰 Balance: ${symbol}${client.balance.toLocaleString()}\n\n`;
+                message += `💳 Mode: ${client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE'}\n`;
+                message += `💰 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n`;
+                message += `━━━━━━━━━━━━━━━\n`;
             }
             
             message += `📅 Access Expires: ${expires}\n`;
@@ -703,14 +701,20 @@ class TelegramBot {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
             
-            let msg = `💰 *Balances*\n`;
+            let msg = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
-                client.refreshProfile();
-                await new Promise(resolve => setTimeout(resolve, 200));
-                const symbol = getCurrencySymbol(client.currency);
-                msg += `\n📧 ${client.email}: ${symbol}${client.balance.toLocaleString()}`;
+                const connected = client?.ws?.readyState === 1;
+                if (connected) {
+                    client.refreshProfile();
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+
+                const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
+                const status = connected ? '✅' : '❌';
+                msg += `\n${status} *${client.email}*\n`;
+                msg += `💰 Real: ${symbol}${client.realBalance.toLocaleString()}\n`;
             }
-            ctx.reply(msg);
+            ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
         this.bot.hears('📊 My Stats', async (ctx) => {
@@ -753,10 +757,13 @@ class TelegramBot {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ No connections');
             
-            let msg = `🔌 *Connection Status*\n`;
+            let msg = `🔌 *Connection Status*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
-                msg += `\n📧 ${client.email}: ${connected ? '✅ Connected' : '❌ Disconnected'}`;
+                const mode = client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE';
+                msg += `\n📧 *${client.email}*\n`;
+                msg += `🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
+                msg += `💳 Mode: ${mode}\n`;
             }
             ctx.reply(msg, { parse_mode: 'Markdown' });
         });
