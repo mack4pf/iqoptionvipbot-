@@ -177,7 +177,7 @@ class TelegramBot {
                     }
 
                     // Force REAL account by default
-                    iqClient.accountType = 'REAL';
+                    iqClient.accountType = 'PRACTICE';
                     iqClient.refreshProfile();
 
                     // Set up callbacks

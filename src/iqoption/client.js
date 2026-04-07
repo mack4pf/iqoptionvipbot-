@@ -184,6 +184,25 @@ class IQOptionClient {
             return;
         }
 
+        // Prevent duplicate reconnection loops
+        if (this._isReconnecting) return;
+        this._isReconnecting = true;
+
+        // Clean up old WebSocket and timers BEFORE creating new ones
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this.ws) {
+            this.ws.removeAllListeners();
+            try { this.ws.close(); } catch (e) {}
+            this.ws = null;
+        }
+
         logger.info(`🔄 Connecting WebSocket for user ${this.chatId}...`);
 
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
@@ -195,20 +214,22 @@ class IQOptionClient {
         }
         
         this.ws = new WebSocket(wsUrl, wsOptions);
+        this._isReconnecting = false;
 
         this.ws.on('open', () => {
             logger.info(`✅ WebSocket connected for user ${this.chatId}`);
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
 
-            // Heartbeat
+            // Heartbeat — only check, do NOT reconnect from here
+            // Let the 'close' handler handle reconnection to avoid duplicate loops
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
                 } else {
-                    logger.warn(`⚠️ User ${this.chatId} WebSocket not open (state: ${this.ws?.readyState}), reconnecting...`);
-                    this.disconnect();
-                    this.connect();
+                    logger.warn(`⚠️ User ${this.chatId} heartbeat: WebSocket dead, closing...`);
+                    if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
+                    try { this.ws.close(); } catch (e) {}
                 }
             }, 30000);
 
@@ -255,8 +276,8 @@ class IQOptionClient {
         this.ws.on('close', () => {
             logger.warn(`🔌 WebSocket closed for user ${this.chatId}`);
             this.connected = false;
-            if (this.pingInterval) clearInterval(this.pingInterval);
-            setTimeout(() => {
+            if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
+            this._reconnectTimer = setTimeout(() => {
                 logger.info(`🔄 Reconnecting user ${this.chatId}...`);
                 this.connect();
             }, 5000);
@@ -503,11 +524,14 @@ class IQOptionClient {
     }
 
     disconnect() {
+        if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
+        if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
         if (this.ws) {
-            this.ws.close();
-            this.connected = false;
+            this.ws.removeAllListeners();
+            try { this.ws.close(); } catch (e) {}
+            this.ws = null;
         }
-        if (this.pingInterval) clearInterval(this.pingInterval);
+        this.connected = false;
     }
 }
 
