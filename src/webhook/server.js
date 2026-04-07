@@ -36,7 +36,7 @@ class WebhookServer {
     start() {
         const port = config.webhook.port;
         console.log(`[DEBUG] Webhook server trying to start on port ${port}`);
-        this.app.listen(port, () => {
+        this.app.listen(port, '0.0.0.0', () => {
             logger.info(`��� TradingView webhook receiver listening on port ${port}`);
             logger.info(`   Endpoint: POST /api/tradingview`);
             logger.info(`   Health: GET /health`);

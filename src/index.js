@@ -58,7 +58,6 @@ class TradingBot {
                 );
                 const loggedIn = await adminClient.login();
                 if (loggedIn) {
-                    adminClient.connect();
                     this.telegramBot.userConnections.set(primaryAdminId, adminClient);
 
                     // Set up admin trade callbacks
