@@ -13,11 +13,13 @@ class TradeExecutor {
     async execute(userId, client, signal, account) {
         const accountKey = client.email || userId;
         
+        console.log(`🔍 Step 1: Checking open position for ${accountKey}`);
         if (this.openPositions.has(accountKey)) {
             logger.info(`⏸️ Account ${accountKey}: Open position exists - blocking`);
             return { success: false, error: 'Account has open position' };
         }
         
+        console.log(`🔍 Step 2: Checking cooldown for ${accountKey}`);
         if (this.lastTradeCloseTime.has(accountKey)) {
             const timeSince = Date.now() - this.lastTradeCloseTime.get(accountKey);
             if (timeSince < this.cooldownSeconds * 1000) {
@@ -26,28 +28,37 @@ class TradeExecutor {
             }
         }
         
+        console.log(`🔍 Step 3: Checking connection status for ${accountKey}`);
+        console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
+
         const martingaleEnabled = account?.martingale_enabled !== false;
         const currency = client?.currency || account?.currency || 'USD';
         
+        console.log(`🔍 Step 4: Currency = ${currency}, balance = ${client.balance}`);
+
         let tradeAmount;
-        console.log(`🔍 Amount Determination for ${accountKey}: account.tradeAmount=${account?.tradeAmount}, currency=${currency}`);
-        
         if (martingaleEnabled) {
             const baseAmount = account?.tradeAmount || 1500;
             const state = this.martingale.getState(accountKey, account, currency, baseAmount);
             tradeAmount = state.currentAmount;
-            console.log(`🔍 Martingale Enabled: state.currentAmount=${tradeAmount}, state.step=${state.step}`);
         } else {
             tradeAmount = account?.tradeAmount || 1500;
-            console.log(`🔍 Martingale Disabled: using direct amount=${tradeAmount}`);
         }
         
-        console.log(`💸 Final trade amount for ${accountKey}: ${tradeAmount}`);
-        
+        console.log(`🔍 Step 5: Trade amount = ${tradeAmount}`);
+
+        // Point 4: Check if balanceId exists
+        if (!client.balanceId) {
+            console.log(`❌ User ${accountKey} has no balanceId, refreshing profile...`);
+            client.refreshProfile();
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
         if (client.balance < tradeAmount) {
             return { success: false, error: `Insufficient balance: ${client.balance} < ${tradeAmount}` };
         }
         
+        console.log(`🔍 Step 6: Placing trade for ${accountKey}...`);
         logger.info(`🚀 Account ${accountKey}: Placing ${signal.direction} trade - ${tradeAmount}`);
         
         const result = await client.placeTrade({

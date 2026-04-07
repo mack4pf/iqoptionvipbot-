@@ -203,8 +203,12 @@ class IQOptionClient {
 
             // Heartbeat
             this.pingInterval = setInterval(() => {
-                if (this.ws?.readyState === WebSocket.OPEN) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
+                } else {
+                    logger.warn(`⚠️ User ${this.chatId} WebSocket not open (state: ${this.ws?.readyState}), reconnecting...`);
+                    this.disconnect();
+                    this.connect();
                 }
             }, 30000);
 
