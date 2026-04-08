@@ -45,6 +45,11 @@ class TradingBot {
         logger.info('📦 Initializing Redis Queue...');
         this.signalQueue = new SignalQueue(this);
 
+        // ========== START WEBHOOK SERVER EARLY FOR DEPLOYMENT HEALTH CHECKS ==========
+        logger.info('📡 Starting Webhook Server (Early for health checks)...');
+        this.webhookServer = new WebhookServer(this);
+        this.webhookServer.start();
+
         // ========== AUTO-LOGIN ADMIN ACCOUNT ==========
         const primaryAdminId = config.telegram.adminIds[0];
         if (primaryAdminId && config.iqoption.email && config.iqoption.password) {
@@ -173,11 +178,6 @@ class TradingBot {
         } catch (error) {
             logger.error('Error auto-connecting users/accounts', error);
         }
-
-        // Initialize Webhook Server
-        logger.info('📡 Starting Webhook Server...');
-        this.webhookServer = new WebhookServer(this);
-        this.webhookServer.start();
 
         logger.info('='.repeat(60));
         logger.info('🎯 BOT IS OPERATIONAL');
