@@ -55,12 +55,12 @@ class TelegramBot {
     }
     async start() {
         console.log("[DEBUG] 10 - start() called");
-        
+
         // Provide error handling for launch
         this.bot.launch().catch(err => {
             logger.error(`Failed to launch Telegram bot: ${err.message}`);
         });
-        
+
         console.log("[DEBUG] 11 - bot launched (background)");
         logger.info('🤖 Telegram bot started');
     }
@@ -69,7 +69,7 @@ class TelegramBot {
             try {
                 ctx.db = this.db;
                 ctx.tradingBot = this.tradingBot;
-                
+
                 // Initialize ctx.state if undefined
                 if (!ctx.state) ctx.state = {};
 
@@ -163,7 +163,7 @@ class TelegramBot {
             }
         });
 
-        // LOGIN COMMAND
+        // LOGIN COMMAND - FIXED: Force REAL account, NOT PRACTICE
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
             if (args.length < 3) {
@@ -196,8 +196,8 @@ class TelegramBot {
                         ctx.session.pendingCode = null;
                     }
 
-                    // Force REAL account by default
-                    iqClient.accountType = 'PRACTICE';
+                    // CRITICAL FIX: Force REAL account by default, NOT PRACTICE
+                    iqClient.accountType = 'REAL';
                     iqClient.refreshProfile();
 
                     // Set up callbacks
@@ -216,7 +216,7 @@ class TelegramBot {
 
                     this.userConnections.set(email, iqClient);
                     await this.db.updateAccount(email, { connected: true });
-                    
+
                     // If this is the user's primary connection, also update the users collection
                     if (user && user.email === email) {
                         await this.db.updateUser(ctx.from.id, { connected: true });
@@ -253,7 +253,7 @@ class TelegramBot {
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected. Use /login first.');
 
             let message = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
-            
+
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
                 if (connected) {
@@ -263,7 +263,7 @@ class TelegramBot {
 
                 const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
                 const status = connected ? '🟢 Connected' : '🔴 Disconnected';
-                
+
                 message += `\n📧 *${client.email}*\n`;
                 message += `📡 Status: ${status}\n`;
                 message += `💵 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n`;
@@ -283,7 +283,7 @@ class TelegramBot {
             const expires = user?.access_expires_at ? new Date(user.access_expires_at).toLocaleDateString() : 'N/A';
 
             let message = `📊 *Connection Status*\n━━━━━━━━━━━━━━━\n\n`;
-            
+
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
                 if (connected) client.refreshProfile();
@@ -295,7 +295,7 @@ class TelegramBot {
                 message += `💰 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n`;
                 message += `━━━━━━━━━━━━━━━\n`;
             }
-            
+
             message += `📅 Access Expires: ${expires}\n`;
 
             await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -312,12 +312,12 @@ class TelegramBot {
             }
             const amount = parseFloat(args[1]);
             if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Enter a valid amount');
-            
-            await this.db.updateUser(ctx.from.id, { 
+
+            await this.db.updateUser(ctx.from.id, {
                 tradeAmount: amount,
-                'martingale.base_amount': amount 
+                'martingale.base_amount': amount
             });
-            
+
             const symbol = getCurrencySymbol(ctx.state.user.currency || 'USD');
             ctx.reply(`✅ Trade amount set to ${symbol}${amount} (Martingale base reset)`);
         });
@@ -373,13 +373,13 @@ class TelegramBot {
         this.bot.command('practice', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Please /login first');
-            
+
             for (const client of userAccounts) {
                 client.accountType = 'PRACTICE';
                 client.refreshProfile();
                 await this.db.updateAccount(client.email, { account_type: 'PRACTICE' });
             }
-            
+
             // Update main user record preference too
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
             ctx.reply(`✅ Switched ${userAccounts.length} accounts to PRACTICE account`);
@@ -720,7 +720,7 @@ class TelegramBot {
         this.bot.hears('💰 Balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
-            
+
             let msg = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
@@ -764,7 +764,7 @@ class TelegramBot {
         this.bot.hears('💵 Real Mode', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Login first');
-            
+
             for (const client of userAccounts) {
                 client.accountType = 'REAL';
                 client.refreshProfile();
@@ -776,7 +776,7 @@ class TelegramBot {
         this.bot.hears('🔌 Status', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ No connections');
-            
+
             let msg = `🔌 *Connection Status*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
@@ -885,7 +885,7 @@ class TelegramBot {
     async handleTradeOpened(userId, tradeData, accountEmail = null) {
         const user = await this.db.getUser(userId);
         if (!user || user.notifications_enabled === false) return;
-        
+
         const client = accountEmail ? this.userConnections.get(accountEmail) : this.getClientsByUserId(userId)[0];
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
         const symbol = getCurrencySymbol(client?.currency || user.currency || 'USD');
@@ -906,7 +906,7 @@ class TelegramBot {
     async handleTradeClosed(userId, tradeResult, accountEmail = null) {
         const user = await this.db.getUser(userId);
         if (!user || user.notifications_enabled === false) return;
-        
+
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
         const message = `${tradeResult.isWin ? '✅' : '❌'} *${tradeResult.isWin ? 'WIN' : 'LOSS'}*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeResult.asset}\n💰 P&L: ${tradeResult.profit}`;
 
