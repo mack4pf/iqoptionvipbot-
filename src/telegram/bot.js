@@ -33,6 +33,26 @@ class TelegramBot {
         });
         console.log("[DEBUG] 9 - bot.catch set");
     }
+
+    // Safe client management to prevent memory leaks by destroying abandoned timers/websockets
+    setConnection(chatId, client) {
+        const key = chatId.toString();
+        const oldClient = this.userConnections.get(key);
+        if (oldClient && oldClient !== client) {
+            logger.info(`♻️ Replacing existing client for ${key} - destroying old instances to free RAM`);
+            oldClient.destroy();
+        }
+        this.userConnections.set(key, client);
+    }
+
+    removeConnection(chatId) {
+        const key = chatId.toString();
+        const client = this.userConnections.get(key);
+        if (client) {
+            client.destroy();
+            this.userConnections.delete(key);
+        }
+    }
     async start() {
         console.log("[DEBUG] 10 - start() called");
         

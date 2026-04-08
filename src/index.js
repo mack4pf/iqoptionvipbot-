@@ -77,7 +77,7 @@ class TradingBot {
                 );
                 const loggedIn = await adminClient.login();
                 if (loggedIn) {
-                    this.telegramBot.userConnections.set(primaryAdminId, adminClient);
+                    this.telegramBot.setConnection(primaryAdminId, adminClient);
 
                     // Set up admin trade callbacks
                     adminClient.onTradeOpened = (tradeData) => {
@@ -122,7 +122,7 @@ class TradingBot {
                         const loggedIn = await client.login(true);
                         
                         if (loggedIn) {
-                            this.telegramBot.userConnections.set(user._id, client);
+                            this.telegramBot.setConnection(user._id, client);
                             
                             client.onTradeOpened = (tradeData) => {
                                 this.telegramBot.handleTradeOpened(user._id, tradeData);
@@ -161,7 +161,7 @@ class TradingBot {
                         const loggedIn = await client.login(true);
                         
                         if (loggedIn) {
-                            this.telegramBot.userConnections.set(acc.email, client);
+                            this.telegramBot.setConnection(acc.email, client);
                             
                             client.onTradeOpened = (tradeData) => this.telegramBot.handleTradeOpened(acc.owner_id, tradeData, acc.email);
                             client.onTradeClosed = async (tradeResult) => {

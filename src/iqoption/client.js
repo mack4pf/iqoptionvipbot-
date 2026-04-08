@@ -167,15 +167,41 @@ class IQOptionClient {
             }
             logger.info(`🗑️ SSID cleared for account ${this.email}`);
         }
+    }
 
-        if (this.ws) {
-            // Remove event listeners before closing to prevent unwanted reconnection attempts
-            this.ws.removeAllListeners('close');
-            this.ws.close();
-            this.connected = false;
+    disconnect() {
+        this.destroy();
+        logger.info(`👋 Account ${this.email} logged out`);
+    }
+
+    destroy() {
+        this.connected = false;
+        
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
         }
 
-        logger.info(`👋 Account ${this.email} logged out`);
+        if (this.ws) {
+            this.ws.removeAllListeners();
+            // Force close immediately to free resources
+            try {
+                if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+                    this.ws.terminate(); 
+                }
+            } catch (e) {}
+            this.ws = null;
+        }
+        
+        // Remove callbacks to avoid leaks
+        this.onTradeOpened = null;
+        this.onTradeClosed = null;
+        this.onBalanceChanged = null;
     }
 
     connect() {
@@ -199,7 +225,7 @@ class IQOptionClient {
         }
         if (this.ws) {
             this.ws.removeAllListeners();
-            try { this.ws.close(); } catch (e) {}
+            try { this.ws.terminate(); } catch (e) {}
             this.ws = null;
         }
 
@@ -213,10 +239,16 @@ class IQOptionClient {
             logger.info(`🔄 User ${this.chatId} connecting WebSocket via Proxy`);
         }
         
-        this.ws = new WebSocket(wsUrl, wsOptions);
-        this._isReconnecting = false;
+        try {
+            this.ws = new WebSocket(wsUrl, wsOptions);
+        } catch (e) {
+            logger.error(`❌ WebSocket creation failed for ${this.chatId}: ${e.message}`);
+            this._isReconnecting = false;
+            return;
+        }
 
         this.ws.on('open', () => {
+            this._isReconnecting = false; // Connection achieved
             logger.info(`✅ WebSocket connected for user ${this.chatId}`);
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
@@ -274,13 +306,22 @@ class IQOptionClient {
         });
 
         this.ws.on('close', () => {
+            if (!this.connected && !this._isReconnecting) return; // Already handled
+            
             logger.warn(`🔌 WebSocket closed for user ${this.chatId}`);
             this.connected = false;
+            this._isReconnecting = false;
+
             if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
-            this._reconnectTimer = setTimeout(() => {
-                logger.info(`🔄 Reconnecting user ${this.chatId}...`);
-                this.connect();
-            }, 5000);
+            
+            // Only plan reconnect if not explicitly destroyed
+            if (this.ws) {
+                if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                this._reconnectTimer = setTimeout(() => {
+                    logger.info(`🔄 Reconnecting user ${this.chatId}...`);
+                    this.connect();
+                }, 5000);
+            }
         });
     }
 
