@@ -1,4 +1,18 @@
 require('dotenv').config();
+
+// Global error handlers for production stability
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+    // Keep process alive but log the error
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('CRITICAL: Uncaught Exception:', err);
+    // On some platforms, we might want to exit, but let's log first
+    if (err.message && err.message.includes('ERR_REQUIRE_ESM')) {
+        console.error('FATAL: CommonJS/ESM incompatibility detected. Please check package versions.');
+    }
+});
 const config = require('./config');
 const MongoDB = require('./database/mongodb');
 const TelegramBot = require('./telegram/bot');
