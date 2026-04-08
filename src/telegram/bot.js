@@ -163,7 +163,7 @@ class TelegramBot {
             }
         });
 
-        // LOGIN COMMAND - FIXED: Force REAL account, NOT PRACTICE
+        // LOGIN COMMAND - FIXED: Force REAL account by default (NOT PRACTICE)
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
             if (args.length < 3) {
@@ -196,7 +196,7 @@ class TelegramBot {
                         ctx.session.pendingCode = null;
                     }
 
-                    // CRITICAL FIX: Force REAL account by default, NOT PRACTICE
+                    // CRITICAL FIX: Force REAL account by default (was PRACTICE before)
                     iqClient.accountType = 'REAL';
                     iqClient.refreshProfile();
 
