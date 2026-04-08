@@ -1,18 +1,17 @@
 require('dotenv').config();
 
-// Global error handlers for production stability
+// Global error handlers
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
-    // Keep process alive but log the error
+    console.error('CRITICAL: Unhandled Rejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL: Uncaught Exception:', err);
-    // On some platforms, we might want to exit, but let's log first
     if (err.message && err.message.includes('ERR_REQUIRE_ESM')) {
-        console.error('FATAL: CommonJS/ESM incompatibility detected. Please check package versions.');
+        console.error('FATAL: CommonJS/ESM incompatibility detected.');
     }
 });
+
 const config = require('./config');
 const MongoDB = require('./database/mongodb');
 const TelegramBot = require('./telegram/bot');
@@ -55,16 +54,16 @@ class TradingBot {
 
         // Initialize Trade Executor and Queue
         this.tradeExecutor = new TradeExecutor(this.db, this.telegramBot, this.martingale);
-        
-        logger.info('📦 Initializing Redis Queue...');
+
+        logger.info('📦 Initializing Signal Queue...');
         this.signalQueue = new SignalQueue(this);
 
-        // ========== START WEBHOOK SERVER EARLY FOR DEPLOYMENT HEALTH CHECKS ==========
-        logger.info('📡 Starting Webhook Server (Early for health checks)...');
+        // ========== START WEBHOOK SERVER ==========
+        logger.info('📡 Starting Webhook Server...');
         this.webhookServer = new WebhookServer(this);
         this.webhookServer.start();
 
-        // ========== AUTO-LOGIN ADMIN ACCOUNT ==========
+        // ========== AUTO-LOGIN PRIMARY ADMIN ONLY (NOT ALL USERS) ==========
         const primaryAdminId = config.telegram.adminIds[0];
         if (primaryAdminId && config.iqoption.email && config.iqoption.password) {
             logger.info(`🔌 Auto-logging primary admin account (${primaryAdminId})...`);
@@ -79,7 +78,6 @@ class TradingBot {
                 if (loggedIn) {
                     this.telegramBot.setConnection(primaryAdminId, adminClient);
 
-                    // Set up admin trade callbacks
                     adminClient.onTradeOpened = (tradeData) => {
                         this.telegramBot.handleTradeOpened(primaryAdminId, tradeData);
                     };
@@ -105,93 +103,9 @@ class TradingBot {
             logger.warn('⚠️ No admin IQ Option credentials in .env - skipping auto-login');
         }
 
-        // ========== AUTO-LOGIN ALL USERS ==========
-        try {
-            logger.info('👥 Auto-connecting users from database...');
-            const users = await this.db.getAllUsers();
-            let connectedCount = 0;
-            
-            for (const user of users) {
-                if (user.ssid && !config.telegram.adminIds.includes(user._id)) {
-                    try {
-                        // Skip if access expired
-                        const hasAccess = await this.db.hasValidAccess(user._id);
-                        if (!hasAccess) continue;
-                        
-                        const client = new IQOptionClient(user.email, 'RESTORED_SESSION', user._id, this.db);
-                        const loggedIn = await client.login(true);
-                        
-                        if (loggedIn) {
-                            this.telegramBot.setConnection(user._id, client);
-                            
-                            client.onTradeOpened = (tradeData) => {
-                                this.telegramBot.handleTradeOpened(user._id, tradeData);
-                            };
-                            client.onTradeClosed = async (tradeResult) => {
-                                this.telegramBot.handleTradeClosed(user._id, tradeResult);
-                                try {
-                                    const u = await this.db.getUser(user._id);
-                                    await this.tradeExecutor.handleResult(user._id, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, u);
-                                } catch (err) { logger.error('Martingale update error:', err.message); }
-                            };
-                            client.onBalanceChanged = ({ amount, currency, type }) => {
-                                this.db.updateUser(user._id, { balance: amount, currency, account_type: type, connected: true });
-                            };
-                            
-                            connectedCount++;
-                            // Prevent spamming IQ Option connection endpoint via rate-limiting connection loop
-                            await new Promise(resolve => setTimeout(resolve, 250)); 
-                        }
-                    } catch (err) {
-                        logger.warn(`Failed to auto-connect user ${user._id}: ${err.message}`);
-                    }
-                }
-            }
-            logger.info(`✅ Auto-connected ${connectedCount} users`);
-
-            // ========== AUTO-LOGIN SUB-ACCOUNTS ==========
-            logger.info('👥 Auto-connecting sub-accounts from database...');
-            const subAccounts = await this.db.getAllAccounts();
-            let subConnectedCount = 0;
-            
-            for (const acc of subAccounts) {
-                if (acc.ssid) {
-                    try {
-                        const client = new IQOptionClient(acc.email, 'RESTORED_SESSION', acc.owner_id, this.db);
-                        const loggedIn = await client.login(true);
-                        
-                        if (loggedIn) {
-                            this.telegramBot.setConnection(acc.email, client);
-                            
-                            client.onTradeOpened = (tradeData) => this.telegramBot.handleTradeOpened(acc.owner_id, tradeData, acc.email);
-                            client.onTradeClosed = async (tradeResult) => {
-                                this.telegramBot.handleTradeClosed(acc.owner_id, tradeResult, acc.email);
-                                try {
-                                    // Fetch the latest account data for this specific sub-account
-                                    const accounts = await this.db.getAccounts(acc.owner_id);
-                                    const accountData = accounts.find(a => a.email === acc.email);
-                                    if (accountData) {
-                                        await this.tradeExecutor.handleResult(acc.owner_id, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, accountData);
-                                    }
-                                } catch (err) { logger.error(`Martingale update error for ${acc.email}:`, err.message); }
-                            };
-                            client.onBalanceChanged = ({ amount, currency, type }) => {
-                                this.db.updateAccount(acc.email, { balance: amount, currency, account_type: type, connected: true });
-                            };
-                            
-                            subConnectedCount++;
-                            await new Promise(resolve => setTimeout(resolve, 250)); 
-                        }
-                    } catch (err) {
-                        logger.warn(`Failed to auto-connect sub-account ${acc.email}: ${err.message}`);
-                    }
-                }
-            }
-            logger.info(`✅ Auto-connected ${subConnectedCount} sub-accounts`);
-
-        } catch (error) {
-            logger.error('Error auto-connecting users/accounts', error);
-        }
+        // AUTO-LOGIN FOR OTHER USERS IS DISABLED FOR FASTER STARTUP
+        // Users will login manually via /login command
+        logger.info('ℹ️ Auto-login for other users is disabled. Users will login manually via /login');
 
         logger.info('='.repeat(60));
         logger.info('🎯 BOT IS OPERATIONAL');
@@ -212,7 +126,6 @@ class TradingBot {
                 return;
             }
             this.recentSignals.set(signal.signalId, now);
-            // Clean up old signals after 60 seconds
             for (const [id, ts] of this.recentSignals) {
                 if (now - ts > 60000) this.recentSignals.delete(id);
             }
@@ -233,8 +146,8 @@ class TradingBot {
             return;
         }
 
-        const batchSize = 50; // Execute 50 users at a time to prevent rate limits or CPU overload
-        
+        const batchSize = 50;
+
         for (let i = 0; i < clients.length; i += batchSize) {
             const batch = clients.slice(i, i + batchSize);
             const batchPromises = batch.map(({ userId, client, email }, index) => {
@@ -248,7 +161,6 @@ class TradingBot {
                     this.userLocks.add(lockKey);
 
                     try {
-                        // Stagger trade placements within the batch (10ms delay per account) to avoid anti-bot detection
                         if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
 
                         let accountData = null;
@@ -277,11 +189,10 @@ class TradingBot {
                     }
                 })();
             });
-            
+
             await Promise.all(batchPromises);
-            
+
             if (i + batchSize < clients.length) {
-                // Short break between batches to protect node.js event loop
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
         }

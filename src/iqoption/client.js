@@ -26,7 +26,6 @@ class IQOptionClient {
         this.realBalance = 0;
         this.realCurrency = 'USD';
         this.realBalanceId = null;
-
         this.practiceBalance = 0;
         this.practiceCurrency = 'USD';
         this.practiceBalanceId = null;
@@ -35,6 +34,11 @@ class IQOptionClient {
         this.onTradeOpened = null;
         this.onTradeClosed = null;
         this.onBalanceChanged = null;
+
+        // Deduplication for position updates
+        this.processedTrades = new Set();
+        this.openDurations = new Map();
+        this.knownTradeIds = new Set();
 
         // Asset mapping
         this.assetMap = {
@@ -57,20 +61,16 @@ class IQOptionClient {
         };
     }
 
-    // Try to restore session from stored SSID
     async restoreSession() {
         if (!this.db) return false;
-
         try {
             let ssid = null;
-            if (this.chatId && !this.email.includes('@')) { // Backward compatibility
+            if (this.chatId && !this.email.includes('@')) {
                 ssid = await this.db.getUserSsid(this.chatId);
             } else {
                 ssid = await this.db.getAccountSsid(this.email);
             }
-            
             if (!ssid) return false;
-
             this.ssid = ssid;
             logger.info(`✅ Account ${this.email}: Session restored`);
             return true;
@@ -80,10 +80,8 @@ class IQOptionClient {
         }
     }
 
-    // Get proxy config using tunnel
     getProxyConfig() {
         if (!config.proxy.host) return null;
-
         return tunnel.httpsOverHttp({
             proxy: {
                 host: config.proxy.host,
@@ -94,7 +92,6 @@ class IQOptionClient {
     }
 
     async login(useProxy = true) {
-        // Try to restore session first
         if (await this.restoreSession()) {
             this.connect();
             return true;
@@ -106,10 +103,7 @@ class IQOptionClient {
             let requestConfig = {
                 method: 'post',
                 url: 'https://auth.iqoption.com/api/v1.0/login',
-                data: {
-                    email: this.email,
-                    password: this.password
-                },
+                data: { email: this.email, password: this.password },
                 timeout: 30000,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -118,7 +112,6 @@ class IQOptionClient {
                 }
             };
 
-            // Add proxy if enabled
             if (useProxy) {
                 const httpsAgent = this.getProxyConfig();
                 if (httpsAgent) {
@@ -133,7 +126,6 @@ class IQOptionClient {
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
 
-                // Store SSID in database
                 if (this.db) {
                     if (this.chatId && !this.email.includes('@')) {
                         await this.db.storeUserSsid(this.chatId, this.ssid);
@@ -144,14 +136,10 @@ class IQOptionClient {
                 }
 
                 logger.info(`✅ Account ${this.email} login successful`);
-
-                // Connect WebSocket
                 this.connect();
                 return true;
             }
-
             return false;
-
         } catch (error) {
             logger.error(`❌ User ${this.chatId} login failed: ${error.message}`);
             return false;
@@ -167,21 +155,21 @@ class IQOptionClient {
             }
             logger.info(`🗑️ SSID cleared for account ${this.email}`);
         }
+        this.destroy();
     }
 
     disconnect() {
         this.destroy();
-        logger.info(`👋 Account ${this.email} logged out`);
     }
 
     destroy() {
         this.connected = false;
-        
+
         if (this.pingInterval) {
             clearInterval(this.pingInterval);
             this.pingInterval = null;
         }
-        
+
         if (this._reconnectTimer) {
             clearTimeout(this._reconnectTimer);
             this._reconnectTimer = null;
@@ -189,19 +177,20 @@ class IQOptionClient {
 
         if (this.ws) {
             this.ws.removeAllListeners();
-            // Force close immediately to free resources
             try {
                 if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-                    this.ws.terminate(); 
+                    this.ws.terminate();
                 }
-            } catch (e) {}
+            } catch (e) { }
             this.ws = null;
         }
-        
-        // Remove callbacks to avoid leaks
+
         this.onTradeOpened = null;
         this.onTradeClosed = null;
         this.onBalanceChanged = null;
+        this.processedTrades.clear();
+        this.openDurations.clear();
+        this.knownTradeIds.clear();
     }
 
     connect() {
@@ -210,11 +199,9 @@ class IQOptionClient {
             return;
         }
 
-        // Prevent duplicate reconnection loops
         if (this._isReconnecting) return;
         this._isReconnecting = true;
 
-        // Clean up old WebSocket and timers BEFORE creating new ones
         if (this.pingInterval) {
             clearInterval(this.pingInterval);
             this.pingInterval = null;
@@ -225,7 +212,7 @@ class IQOptionClient {
         }
         if (this.ws) {
             this.ws.removeAllListeners();
-            try { this.ws.terminate(); } catch (e) {}
+            try { this.ws.terminate(); } catch (e) { }
             this.ws = null;
         }
 
@@ -234,11 +221,11 @@ class IQOptionClient {
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
         const agent = this.getProxyConfig();
         const wsOptions = agent ? { agent } : {};
-        
+
         if (agent) {
             logger.info(`🔄 User ${this.chatId} connecting WebSocket via Proxy`);
         }
-        
+
         try {
             this.ws = new WebSocket(wsUrl, wsOptions);
         } catch (e) {
@@ -248,27 +235,19 @@ class IQOptionClient {
         }
 
         this.ws.on('open', () => {
-            this._isReconnecting = false; // Connection achieved
+            this._isReconnecting = false;
             logger.info(`✅ WebSocket connected for user ${this.chatId}`);
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
 
-            // Heartbeat — only check, do NOT reconnect from here
-            // Let the 'close' handler handle reconnection to avoid duplicate loops
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
-                } else {
-                    logger.warn(`⚠️ User ${this.chatId} heartbeat: WebSocket dead, closing...`);
-                    if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
-                    try { this.ws.close(); } catch (e) {}
                 }
             }, 30000);
 
-            // Request profile
             this.refreshProfile();
 
-            // Get balances
             setTimeout(() => {
                 this.send({
                     name: 'sendMessage',
@@ -277,7 +256,6 @@ class IQOptionClient {
                 });
             }, 1000);
 
-            // Subscribe to position changes
             setTimeout(() => {
                 this.send({
                     name: 'subscribeMessage',
@@ -295,9 +273,7 @@ class IQOptionClient {
             try {
                 const message = JSON.parse(data);
                 this.handleMessage(message);
-            } catch (err) {
-                // Ignore parse errors
-            }
+            } catch (err) { }
         });
 
         this.ws.on('error', (error) => {
@@ -306,15 +282,14 @@ class IQOptionClient {
         });
 
         this.ws.on('close', () => {
-            if (!this.connected && !this._isReconnecting) return; // Already handled
-            
+            if (!this.connected && !this._isReconnecting) return;
+
             logger.warn(`🔌 WebSocket closed for user ${this.chatId}`);
             this.connected = false;
             this._isReconnecting = false;
 
             if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
-            
-            // Only plan reconnect if not explicitly destroyed
+
             if (this.ws) {
                 if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
                 this._reconnectTimer = setTimeout(() => {
@@ -360,7 +335,6 @@ class IQOptionClient {
             this.practiceBalanceId = practice.id;
         }
 
-        // Set active balance based on accountType
         if (this.accountType === 'REAL' && real) {
             this.balance = real.amount;
             this.currency = real.currency;
@@ -371,9 +345,8 @@ class IQOptionClient {
             this.balanceId = practice.id;
         }
 
-        logger.info(`💰 User ${this.chatId} - REAL Balance: ${this.realCurrency} ${this.realBalance}`);
-        logger.info(`💰 User ${this.chatId} - PRACTICE Balance: ${this.practiceCurrency} ${this.practiceBalance}`);
-        logger.info(`🎯 Active for trading: ${this.accountType} (${this.currency}) - ID: ${this.balanceId}`);
+        logger.info(`💰 User ${this.chatId} - REAL: ${this.realCurrency} ${this.realBalance} | PRACTICE: ${this.practiceCurrency} ${this.practiceBalance}`);
+        logger.info(`🎯 Active: ${this.accountType} (${this.currency}) - ID: ${this.balanceId}`);
 
         if (this.onBalanceChanged) {
             this.onBalanceChanged({
@@ -413,6 +386,13 @@ class IQOptionClient {
     }
 
     handlePositionUpdate(position) {
+        const tradeId = position.id || position.external_id;
+
+        // Deduplicate - prevent multiple notifications for same trade
+        if (this.processedTrades.has(tradeId)) {
+            return;
+        }
+
         const activeId = position.active_id || position.instrument_id;
         const asset = this.getAssetName(activeId);
 
@@ -435,16 +415,14 @@ class IQOptionClient {
         }
 
         if (position.status === 'open') {
-            const tradeId = position.id || position.external_id;
-            this.knownTradeIds = this.knownTradeIds || new Set();
-            this.openDurations = this.openDurations || new Map();
-            
             if (!this.knownTradeIds.has(tradeId)) {
                 this.knownTradeIds.add(tradeId);
+                this.processedTrades.add(tradeId);
+                setTimeout(() => this.processedTrades.delete(tradeId), 10000);
 
                 const amount = position.invest || position.raw_event?.amount || 0;
                 const duration = position.duration || this.openDurations.get(tradeId) || '?';
-                
+
                 const tradeData = {
                     asset,
                     direction: displayDirection,
@@ -459,6 +437,9 @@ class IQOptionClient {
         }
 
         if (position.status === 'closed') {
+            this.processedTrades.add(tradeId);
+            setTimeout(() => this.processedTrades.delete(tradeId), 10000);
+
             const investment = position.invest || position.raw_event?.amount || 0;
             let profit = 0;
             const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
@@ -474,12 +455,12 @@ class IQOptionClient {
                 investment,
                 profit,
                 isWin,
-                tradeId: position.id || position.external_id
+                tradeId
             };
-            
-            if (this.openDurations) this.openDurations.delete(tradeResult.tradeId);
-            if (this.knownTradeIds) this.knownTradeIds.delete(tradeResult.tradeId);
-            
+
+            this.openDurations.delete(tradeId);
+            this.knownTradeIds.delete(tradeId);
+
             logger.info(`\n${isWin ? '✅' : '❌'} User ${this.chatId} TRADE CLOSED: ${asset} Profit: ${this.currency}${profit.toFixed(2)}`);
             if (this.onTradeClosed) this.onTradeClosed(tradeResult);
 
@@ -500,7 +481,7 @@ class IQOptionClient {
             const { asset, direction, amount, duration } = params;
             const requestId = Date.now();
 
-            let activeId = 1861; // default to EURUSD
+            let activeId = 1861;
             for (const [id, name] of Object.entries(this.assetMap)) {
                 if (name === asset) {
                     activeId = parseInt(id);
@@ -539,7 +520,6 @@ class IQOptionClient {
                     const msg = JSON.parse(data);
                     if (msg.name === 'option-opened' && msg.msg?.option_id) {
                         this.ws?.removeListener('message', messageListener);
-                        this.openDurations = this.openDurations || new Map();
                         this.openDurations.set(msg.msg.option_id, duration);
                         resolve({ success: true, tradeId: msg.msg.option_id });
                     }
@@ -569,7 +549,7 @@ class IQOptionClient {
         if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
         if (this.ws) {
             this.ws.removeAllListeners();
-            try { this.ws.close(); } catch (e) {}
+            try { this.ws.close(); } catch (e) { }
             this.ws = null;
         }
         this.connected = false;
