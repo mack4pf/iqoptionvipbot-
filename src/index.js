@@ -102,7 +102,6 @@ class TradingBot {
         logger.info('👥 FORCE RECONNECTING ALL SUB-ACCOUNTS FROM DATABASE...');
 
         try {
-            // Get all accounts from the accounts collection
             const allAccounts = await this.db.getAllAccounts();
             logger.info(`📊 Found ${allAccounts.length} sub-accounts in database`);
 
@@ -113,18 +112,13 @@ class TradingBot {
                 try {
                     logger.info(`🔄 Attempting to restore account: ${acc.email}`);
 
-                    // Create client for this account
                     const client = new IQOptionClient(acc.email, 'RESTORED_SESSION', acc.owner_id, this.db);
-
-                    // Try to login (will restore session if SSID exists, or use stored password)
                     const loggedIn = await client.login(true);
 
                     if (loggedIn) {
-                        // Force REAL account
                         client.accountType = 'REAL';
                         client.refreshProfile();
 
-                        // Set up callbacks
                         client.onTradeOpened = (tradeData) => {
                             this.telegramBot.handleTradeOpened(acc.owner_id, tradeData, acc.email);
                         };
@@ -142,7 +136,6 @@ class TradingBot {
                             this.db.updateAccount(acc.email, { balance: amount, currency, account_type: type, connected: true });
                         };
 
-                        // Store in userConnections Map
                         this.telegramBot.userConnections.set(acc.email, client);
                         await this.db.updateAccount(acc.email, { connected: true });
 
@@ -153,7 +146,6 @@ class TradingBot {
                         logger.warn(`❌ Failed to restore account: ${acc.email} - login returned false`);
                     }
 
-                    // Small delay to prevent rate limiting
                     await new Promise(resolve => setTimeout(resolve, 500));
 
                 } catch (err) {
@@ -176,10 +168,7 @@ class TradingBot {
             let legacyConnected = 0;
 
             for (const user of allUsers) {
-                // Skip admin accounts
                 if (config.telegram.adminIds.includes(user._id)) continue;
-
-                // Skip if already connected via accounts collection
                 if (this.telegramBot.userConnections.has(user.email)) continue;
 
                 if (user.ssid) {
@@ -222,7 +211,6 @@ class TradingBot {
     }
 
     async executeSignalForAllUsers(signal) {
-        // Deduplication
         if (!signal.signalId) {
             logger.warn('⚠️ Signal received without signalId');
         } else {
@@ -244,10 +232,8 @@ class TradingBot {
             return;
         }
 
-        // Get ALL connected clients from userConnections Map
         const clients = [];
         for (const [email, client] of this.telegramBot.userConnections) {
-            // Check if client is actually connected
             const isConnected = client.connected === true || (client.ws && client.ws.readyState === 1);
             if (isConnected) {
                 clients.push({ userId: client.chatId, client, email });
@@ -281,7 +267,6 @@ class TradingBot {
                     try {
                         if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
 
-                        // Get account data from database with retry logic
                         let accountData = null;
                         let retries = 0;
                         const maxRetries = 5;
@@ -289,7 +274,6 @@ class TradingBot {
                         while (!accountData && retries < maxRetries) {
                             const accounts = await this.db.getAccounts(userId);
                             accountData = accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
-
                             if (!accountData && retries < maxRetries - 1) {
                                 logger.warn(`⏳ Waiting for account data for ${email} (attempt ${retries + 1}/${maxRetries})...`);
                                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -297,37 +281,21 @@ class TradingBot {
                             retries++;
                         }
 
-                        // If still no account data, create fallback from client
+                        // If still no account data, use client data (do NOT attempt to save to DB without password)
                         if (!accountData) {
-                            logger.warn(`⚠️ No account data found for ${email} after ${maxRetries} attempts, creating fallback`);
-
-                            // Create fallback account data from client
+                            logger.warn(`⚠️ No account data found for ${email} after ${maxRetries} attempts, using client data`);
                             accountData = {
                                 email: email,
-                                tradeAmount: 1500,
+                                tradeAmount: client.tradeAmount || 1500,
                                 martingale_enabled: true,
                                 account_type: client.accountType || 'REAL',
                                 autoTraderEnabled: true,
                                 currency: client.currency || 'USD',
                                 balance: client.balance || 0,
                                 stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
-                                martingale: { current_step: 0, current_amount: 1500, loss_streak: 0, base_amount: 1500, initial_balance: 0 }
+                                martingale: { current_step: 0, current_amount: client.tradeAmount || 1500, loss_streak: 0, base_amount: client.tradeAmount || 1500, initial_balance: 0 }
                             };
-
-                            // Try to save this fallback to database for future
-                            try {
-                                await this.db.addAccount(userId, email, null);
-                                await this.db.updateAccount(email, {
-                                    tradeAmount: 1500,
-                                    martingale_enabled: true,
-                                    account_type: 'REAL',
-                                    autoTraderEnabled: true,
-                                    currency: client.currency || 'USD'
-                                });
-                                logger.info(`✅ Created fallback account record for ${email}`);
-                            } catch (err) {
-                                logger.warn(`Could not save fallback account for ${email}: ${err.message}`);
-                            }
+                            // Do NOT call addAccount with null password
                         }
 
                         if (accountData.autoTraderEnabled === false) {

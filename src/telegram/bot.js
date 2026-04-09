@@ -159,7 +159,7 @@ class TelegramBot {
             }
         });
 
-        // LOGIN COMMAND - Supports multiple accounts, waits for balance
+        // LOGIN COMMAND - Supports multiple accounts, saves to accounts collection
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
             if (args.length < 3) {
@@ -179,7 +179,6 @@ class TelegramBot {
 
             try {
                 const iqClient = new IQOptionClient(email, password, ctx.from.id, this.db);
-
                 const loginPromise = iqClient.login(true);
                 const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout after 20s')), 20000));
                 const loggedIn = await Promise.race([loginPromise, timeoutPromise]);
@@ -195,24 +194,32 @@ class TelegramBot {
                     ctx.session.pendingCode = null;
                 }
 
+                // Force REAL account
                 iqClient.accountType = 'REAL';
                 iqClient.refreshProfile();
 
-                // Wait for profile to load so balance is correct
+                // Wait for profile to load
                 let retries = 0;
                 while ((iqClient.realBalance === 0 || !iqClient.realCurrency) && retries < 10) {
                     await new Promise(resolve => setTimeout(resolve, 500));
                     retries++;
                 }
 
+                // Save this account to the accounts collection if not already present
+                const existingAccount = await this.db.getAccountByEmail(email);
+                if (!existingAccount) {
+                    await this.db.addAccount(ctx.from.id, email, password, 'REAL', 1500);
+                    logger.info(`💾 Saved sub‑account ${email} to accounts collection`);
+                } else {
+                    await this.db.updateAccount(email, { connected: true, ssid: iqClient.ssid });
+                }
+
                 iqClient.onTradeOpened = (tradeData) => {
                     this.handleTradeOpened(ctx.from.id, tradeData, email);
                 };
-
                 iqClient.onTradeClosed = (tradeResult) => {
                     this.handleTradeClosed(ctx.from.id, tradeResult, email);
                 };
-
                 iqClient.onBalanceChanged = ({ amount, currency }) => {
                     this.db.updateAccount(email, { balance: amount, currency, connected: true });
                     logger.info(`💰 Account ${email}: Balance updated to ${currency}${amount}`);
@@ -243,7 +250,7 @@ class TelegramBot {
             }
         });
 
-        // BALANCE COMMAND - Shows both REAL and PRACTICE, highlights active mode
+        // BALANCE COMMAND
         this.bot.command('balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected. Use /login first.');
@@ -293,7 +300,7 @@ class TelegramBot {
             await ctx.reply(message, { parse_mode: 'Markdown' });
         });
 
-        // SET AMOUNT COMMAND
+        // SET AMOUNT COMMAND (single account)
         this.bot.command('setamount', async (ctx) => {
             if (!ctx.state.user) return ctx.reply('❌ Please login first');
             const args = ctx.message.text.split(' ');
@@ -379,7 +386,7 @@ class TelegramBot {
             );
         });
 
-        // NEW: Switch ALL connected accounts (admin only) to PRACTICE
+        // NEW: Switch ALL connected accounts to PRACTICE
         this.bot.command('practiceall', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
@@ -408,7 +415,7 @@ class TelegramBot {
             );
         });
 
-        // NEW: Switch ALL connected accounts (admin only) to REAL with confirmation
+        // NEW: Switch ALL connected accounts to REAL (with confirmation)
         this.bot.command('realall', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
@@ -468,7 +475,7 @@ class TelegramBot {
             }
         });
 
-        // ADMIN COMMANDS (existing)
+        // ADMIN COMMANDS (including fixed /setallamounts)
         this.bot.command('generate', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
             const code = await this.db.createAccessCode(ctx.from.id);
@@ -564,12 +571,31 @@ class TelegramBot {
             await ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
+        // FIXED: /setallamounts now works with connected accounts
+        this.bot.command('setallamounts', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) return ctx.reply('❌ *Usage:* `/setallamounts amount`');
+            const amount = parseFloat(args[1]);
+            if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Invalid amount');
+
+            let count = 0;
+            for (const [email, client] of this.userConnections) {
+                // Update in-memory client if it has tradeAmount property
+                if (client && typeof client === 'object') {
+                    client.tradeAmount = amount;
+                    // Also update in DB if account exists
+                    await this.db.updateAccount(email, { tradeAmount: amount, 'martingale.base_amount': amount }).catch(() => { });
+                    count++;
+                }
+            }
+            ctx.reply(`✅ Trade amount for ALL ${count} connected accounts set to ${amount}`);
+        });
+
         this.bot.command('addaccount', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
             const args = ctx.message.text.split(' ');
-            if (args.length < 3) {
-                return ctx.reply('❌ *Usage:* `/addaccount email password`', { parse_mode: 'Markdown' });
-            }
+            if (args.length < 3) return ctx.reply('❌ *Usage:* `/addaccount email password`', { parse_mode: 'Markdown' });
 
             const email = args[1];
             const password = args.slice(2).join(' ');
@@ -586,7 +612,7 @@ class TelegramBot {
 
                 iqClient.accountType = 'REAL';
                 iqClient.refreshProfile();
-                await this.db.addAccount(ctx.from.id, email, password);
+                await this.db.addAccount(ctx.from.id, email, password, 'REAL', 1500);
 
                 iqClient.onTradeOpened = (tradeData) => this.handleTradeOpened(ctx.from.id, tradeData, email);
                 iqClient.onTradeClosed = (tradeResult) => this.handleTradeClosed(ctx.from.id, tradeResult, email);
@@ -619,22 +645,10 @@ class TelegramBot {
             if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Invalid amount');
 
             await this.db.updateAccount(email, { tradeAmount: amount, 'martingale.base_amount': amount });
+            // Also update in-memory client if connected
+            const client = this.userConnections.get(email);
+            if (client) client.tradeAmount = amount;
             ctx.reply(`✅ Trade amount for ${email} set to ${amount}`);
-        });
-
-        this.bot.command('setallamounts', async (ctx) => {
-            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
-            const args = ctx.message.text.split(' ');
-            if (args.length < 2) return ctx.reply('❌ *Usage:* `/setallamounts amount`');
-
-            const amount = parseFloat(args[1]);
-            if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Invalid amount');
-
-            const accounts = await this.db.getAccounts(ctx.from.id);
-            for (const acc of accounts) {
-                await this.db.updateAccount(acc.email, { tradeAmount: amount, 'martingale.base_amount': amount });
-            }
-            ctx.reply(`✅ Trade amount for ALL ${accounts.length} accounts set to ${amount}`);
         });
 
         this.bot.command('disconnectaccount', async (ctx) => {
@@ -687,7 +701,7 @@ class TelegramBot {
                 helpMsg += '/allaccounts - Show all connected accounts\n';
                 helpMsg += '/addaccount - Add sub-account\n';
                 helpMsg += '/setaccamount - Set sub-account amount\n';
-                helpMsg += '/setallamounts - Set all amounts\n';
+                helpMsg += '/setallamounts - Set amount for ALL connected accounts\n';
                 helpMsg += '/disconnectaccount - Disconnect sub-account\n\n';
             }
 
@@ -770,7 +784,7 @@ class TelegramBot {
             await ctx.editMessageText('❌ Switch cancelled.', { parse_mode: 'Markdown' });
         });
 
-        // Single account real confirmation (existing)
+        // Single account real confirmation
         this.bot.action('confirm_real', async (ctx) => {
             await ctx.answerCbQuery();
             const userAccounts = this.getClientsByUserId(ctx.from.id);
@@ -790,7 +804,7 @@ class TelegramBot {
             await ctx.reply('❌ Cancelled');
         });
 
-        // Menu handlers
+        // Menu handlers (existing)
         this.bot.hears('🏠 Main Menu', async (ctx) => {
             if (ctx.state.user?.is_admin) {
                 await ctx.reply('Admin Menu', this.adminMainMenu);
@@ -870,7 +884,7 @@ class TelegramBot {
             ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
-        // Admin menu handlers
+        // Admin menu handlers (existing)
         this.bot.hears('🎫 Generate Code', async (ctx) => {
             if (!ctx.state.user?.is_admin) return;
             const code = await this.db.createAccessCode(ctx.from.id);
