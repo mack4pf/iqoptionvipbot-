@@ -9,36 +9,44 @@ class TradeExecutor {
         this.lastTradeCloseTime = new Map();
         this.cooldownSeconds = 10;
 
-        // Clear any stale open positions on startup (prevents false "open position" blocks)
+        // Clear any stale open positions on startup
         this.openPositions.clear();
         this.lastTradeCloseTime.clear();
+    }
+
+    // Validate amount against currency min/max
+    validateAmount(amount, currency) {
+        const limits = {
+            NGN: { min: 1500, max: 50000000 },
+            USD: { min: 1, max: 10000000 },
+            EUR: { min: 1, max: 100000 },
+            GBP: { min: 1, max: 100000 },
+            BRL: { min: 5, max: 500000 },
+            INR: { min: 70, max: 7000000 },
+            MXN: { min: 20, max: 2000000 },
+            AED: { min: 5, max: 500000 },
+            ZAR: { min: 20, max: 2000000 },
+        };
+        const limit = limits[currency?.toUpperCase()];
+        if (!limit) return amount;
+        if (amount < limit.min) return limit.min;
+        if (amount > limit.max) return limit.max;
+        return amount;
     }
 
     async execute(userId, client, signal, account) {
         const accountKey = client.email || userId;
 
-        console.log(`🔍 Step 1: Checking open position for ${accountKey}`);
-        if (this.openPositions.has(accountKey)) {
-            logger.info(`⏸️ Account ${accountKey}: Open position exists - blocking`);
-            return { success: false, error: 'Account has open position' };
-        }
+        // ========== NO OPEN POSITION CHECK ==========
+        // ========== NO COOLDOWN CHECK ==========
 
-        console.log(`🔍 Step 2: Checking cooldown for ${accountKey}`);
-        if (this.lastTradeCloseTime.has(accountKey)) {
-            const timeSince = Date.now() - this.lastTradeCloseTime.get(accountKey);
-            if (timeSince < this.cooldownSeconds * 1000) {
-                logger.info(`⏸️ Account ${accountKey}: Cooldown active`);
-                return { success: false, error: 'Cooldown active' };
-            }
-        }
-
-        console.log(`🔍 Step 3: Checking connection status for ${accountKey}`);
+        console.log(`🔍 Step 1: Checking connection status for ${accountKey}`);
         console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
 
         const martingaleEnabled = account?.martingale_enabled !== false;
         const currency = client?.currency || account?.currency || 'USD';
 
-        console.log(`🔍 Step 4: Currency = ${currency}, balance = ${client.balance}`);
+        console.log(`🔍 Step 2: Currency = ${currency}, balance = ${client.balance}`);
 
         let tradeAmount;
         if (martingaleEnabled) {
@@ -49,7 +57,10 @@ class TradeExecutor {
             tradeAmount = account?.tradeAmount || 1500;
         }
 
-        console.log(`🔍 Step 5: Trade amount = ${tradeAmount}`);
+        // Apply currency min/max validation
+        tradeAmount = this.validateAmount(tradeAmount, currency);
+
+        console.log(`🔍 Step 3: Trade amount = ${tradeAmount}`);
 
         if (!client.balanceId) {
             console.log(`❌ User ${accountKey} has no balanceId, refreshing profile...`);
@@ -61,7 +72,7 @@ class TradeExecutor {
             return { success: false, error: `Insufficient balance: ${client.balance} < ${tradeAmount}` };
         }
 
-        console.log(`🔍 Step 6: Placing trade for ${accountKey}...`);
+        console.log(`🔍 Step 4: Placing trade for ${accountKey}...`);
         logger.info(`🚀 Account ${accountKey}: Placing ${signal.direction} trade - ${tradeAmount}`);
 
         const result = await client.placeTrade({
@@ -75,6 +86,7 @@ class TradeExecutor {
             return { success: false, error: result.error };
         }
 
+        // Store the open position only after successful placement
         this.openPositions.set(accountKey, result.tradeId);
 
         return {
