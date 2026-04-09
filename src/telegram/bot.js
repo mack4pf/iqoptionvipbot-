@@ -159,7 +159,7 @@ class TelegramBot {
             }
         });
 
-        // LOGIN COMMAND - Supports multiple accounts
+        // LOGIN COMMAND - Supports multiple accounts, waits for balance
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
             if (args.length < 3) {
@@ -198,6 +198,13 @@ class TelegramBot {
                 iqClient.accountType = 'REAL';
                 iqClient.refreshProfile();
 
+                // Wait for profile to load so balance is correct
+                let retries = 0;
+                while ((iqClient.realBalance === 0 || !iqClient.realCurrency) && retries < 10) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    retries++;
+                }
+
                 iqClient.onTradeOpened = (tradeData) => {
                     this.handleTradeOpened(ctx.from.id, tradeData, email);
                 };
@@ -215,12 +222,17 @@ class TelegramBot {
                 await this.db.updateAccount(email, { connected: true });
 
                 await ctx.deleteMessage(statusMsg.message_id);
-                await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const symbol = getCurrencySymbol(iqClient.realCurrency || 'USD');
+                const realBal = iqClient.realBalance.toLocaleString();
+                const practiceSymbol = getCurrencySymbol(iqClient.practiceCurrency || 'USD');
+                const practiceBal = iqClient.practiceBalance.toLocaleString();
+
                 await ctx.reply(
                     `✅ *Connected: ${email}*\n` +
-                    `💰 Real Balance: ${symbol}${iqClient.realBalance.toLocaleString()}\n\n` +
+                    `━━━━━━━━━━━━━━━\n` +
+                    `💰 *REAL:* ${symbol}${realBal}\n` +
+                    `🧪 *PRACTICE:* ${practiceSymbol}${practiceBal}\n\n` +
                     `_Ready to trade._`,
                     { parse_mode: 'Markdown' }
                 );
@@ -231,21 +243,29 @@ class TelegramBot {
             }
         });
 
-        // BALANCE COMMAND
+        // BALANCE COMMAND - Shows both REAL and PRACTICE, highlights active mode
         this.bot.command('balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected. Use /login first.');
 
-            let message = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
+            let message = `💰 *Account Balances*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
                 if (connected) {
                     client.refreshProfile();
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
-                const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
-                const status = connected ? '🟢 Connected' : '🔴 Disconnected';
-                message += `\n📧 *${client.email}*\n📡 Status: ${status}\n💵 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n━━━━━━━━━━━━━━━\n`;
+                const realSymbol = getCurrencySymbol(client.realCurrency || 'USD');
+                const practiceSymbol = getCurrencySymbol(client.practiceCurrency || 'USD');
+                const activeSymbol = getCurrencySymbol(client.currency || 'USD');
+                const activeType = client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE';
+                const status = connected ? '🟢' : '🔴';
+
+                message += `\n${status} *${client.email}*\n`;
+                message += `💵 REAL: ${realSymbol}${client.realBalance.toLocaleString()}\n`;
+                message += `💵 PRACTICE: ${practiceSymbol}${client.practiceBalance.toLocaleString()}\n`;
+                message += `🎯 Active: ${activeType} (${activeSymbol}${client.balance.toLocaleString()})\n`;
+                message += `━━━━━━━━━━━━━━━\n`;
             }
             await ctx.reply(message, { parse_mode: 'Markdown' });
         });
@@ -263,7 +283,11 @@ class TelegramBot {
                 const connected = client?.ws?.readyState === 1;
                 if (connected) client.refreshProfile();
                 const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
-                message += `📧 *${client.email}*\n🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n💳 Mode: ${client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE'}\n💰 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n━━━━━━━━━━━━━━━\n`;
+                message += `📧 *${client.email}*\n`;
+                message += `🔌 Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
+                message += `💳 Mode: ${client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE'}\n`;
+                message += `💰 Real Balance: ${symbol}${client.realBalance.toLocaleString()}\n`;
+                message += `━━━━━━━━━━━━━━━\n`;
             }
             message += `📅 Access Expires: ${expires}\n`;
             await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -290,7 +314,7 @@ class TelegramBot {
             if (!ctx.state.user) return ctx.reply('❌ Please login first.');
             const current = ctx.state.user.notifications_enabled !== false;
             await this.db.updateUser(ctx.from.id, { notifications_enabled: !current });
-            ctx.reply(current ? '🔕 Notifications stopped. You will no longer receive trade alerts.' : '🔔 Notifications resumed.');
+            ctx.reply(current ? '🔕 Notifications stopped.' : '🔔 Notifications resumed.');
         });
 
         // MARTINGALE COMMAND
@@ -333,7 +357,7 @@ class TelegramBot {
             });
         });
 
-        // ACCOUNT SWITCHING
+        // ACCOUNT SWITCHING (single account)
         this.bot.command('practice', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Please /login first');
@@ -352,6 +376,53 @@ class TelegramBot {
             await ctx.reply(
                 `⚠️ *WARNING: Switching ${userAccounts.length} accounts to REAL*\n\nThis uses real money. Are you sure?`,
                 { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Yes', 'confirm_real'), Markup.button.callback('❌ Cancel', 'cancel_real')]]) }
+            );
+        });
+
+        // NEW: Switch ALL connected accounts (admin only) to PRACTICE
+        this.bot.command('practiceall', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+
+            let switchedCount = 0;
+            let failedCount = 0;
+
+            for (const [email, client] of this.userConnections) {
+                try {
+                    client.accountType = 'PRACTICE';
+                    client.refreshProfile();
+                    await this.db.updateAccount(email, { account_type: 'PRACTICE' });
+                    switchedCount++;
+                    logger.info(`✅ Switched ${email} to PRACTICE mode`);
+                } catch (err) {
+                    failedCount++;
+                    logger.error(`❌ Failed to switch ${email}: ${err.message}`);
+                }
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            await ctx.reply(
+                `✅ *Switched ${switchedCount} accounts to PRACTICE mode*\n` +
+                `❌ Failed: ${failedCount}\n\n` +
+                `_All trades will now use demo balance._`,
+                { parse_mode: 'Markdown' }
+            );
+        });
+
+        // NEW: Switch ALL connected accounts (admin only) to REAL with confirmation
+        this.bot.command('realall', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+
+            await ctx.reply(
+                '⚠️ *WARNING: Switching ALL accounts to REAL mode*\n\n' +
+                'This will use REAL money for ALL connected accounts.\n\n' +
+                'Are you absolutely sure?',
+                {
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('✅ YES, switch all to REAL', 'confirm_realall')],
+                        [Markup.button.callback('❌ Cancel', 'cancel_realall')]
+                    ])
+                }
             );
         });
 
@@ -397,7 +468,7 @@ class TelegramBot {
             }
         });
 
-        // ADMIN COMMANDS
+        // ADMIN COMMANDS (existing)
         this.bot.command('generate', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
             const code = await this.db.createAccessCode(ctx.from.id);
@@ -477,7 +548,6 @@ class TelegramBot {
             ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
-        // DEBUG: Show all connected accounts
         this.bot.command('allaccounts', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
@@ -598,8 +668,10 @@ class TelegramBot {
             helpMsg += '/balance - Check balance\n';
             helpMsg += '/setamount [amount] - Set trade amount\n';
             helpMsg += '/martingale - View/toggle martingale\n';
-            helpMsg += '/practice - Demo mode\n';
-            helpMsg += '/real - Real money\n';
+            helpMsg += '/practice - Demo mode (single)\n';
+            helpMsg += '/real - Real money (single)\n';
+            helpMsg += '/practiceall - Switch ALL to demo (admin)\n';
+            helpMsg += '/realall - Switch ALL to real (admin)\n';
             helpMsg += '/stats - Your stats\n\n';
 
             if (isAdmin) {
@@ -612,7 +684,11 @@ class TelegramBot {
                 helpMsg += '/removechannel - Remove channel\n';
                 helpMsg += '/setduration 3/5 - Trade duration\n';
                 helpMsg += '/connections - Show connections\n';
-                helpMsg += '/allaccounts - Show all connected accounts\n\n';
+                helpMsg += '/allaccounts - Show all connected accounts\n';
+                helpMsg += '/addaccount - Add sub-account\n';
+                helpMsg += '/setaccamount - Set sub-account amount\n';
+                helpMsg += '/setallamounts - Set all amounts\n';
+                helpMsg += '/disconnectaccount - Disconnect sub-account\n\n';
             }
 
             helpMsg += '━━━━━━━━━━━━━━━━━━━━━━━━━\n';
@@ -660,6 +736,41 @@ class TelegramBot {
             await ctx.editMessageText('🔄 Martingale reset to base');
         });
 
+        // Confirm switch all to REAL
+        this.bot.action('confirm_realall', async (ctx) => {
+            await ctx.answerCbQuery();
+
+            let switchedCount = 0;
+            let failedCount = 0;
+
+            for (const [email, client] of this.userConnections) {
+                try {
+                    client.accountType = 'REAL';
+                    client.refreshProfile();
+                    await this.db.updateAccount(email, { account_type: 'REAL' });
+                    switchedCount++;
+                    logger.info(`✅ Switched ${email} to REAL mode`);
+                } catch (err) {
+                    failedCount++;
+                    logger.error(`❌ Failed to switch ${email}: ${err.message}`);
+                }
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            await ctx.editMessageText(
+                `✅ *Switched ${switchedCount} accounts to REAL mode*\n` +
+                `❌ Failed: ${failedCount}\n\n` +
+                `_⚠️ All trades will now use REAL money._`,
+                { parse_mode: 'Markdown' }
+            );
+        });
+
+        this.bot.action('cancel_realall', async (ctx) => {
+            await ctx.answerCbQuery();
+            await ctx.editMessageText('❌ Switch cancelled.', { parse_mode: 'Markdown' });
+        });
+
+        // Single account real confirmation (existing)
         this.bot.action('confirm_real', async (ctx) => {
             await ctx.answerCbQuery();
             const userAccounts = this.getClientsByUserId(ctx.from.id);
@@ -691,18 +802,25 @@ class TelegramBot {
         this.bot.hears('💰 Balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
-            let msg = `💰 *Real Account Balances*\n━━━━━━━━━━━━━━━\n`;
+            let msg = `💰 *Account Balances*\n━━━━━━━━━━━━━━━\n`;
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
                 if (connected) {
                     client.refreshProfile();
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
-                const symbol = getCurrencySymbol(client.realCurrency || client.currency || 'USD');
+                const realSymbol = getCurrencySymbol(client.realCurrency || 'USD');
+                const practiceSymbol = getCurrencySymbol(client.practiceCurrency || 'USD');
+                const activeSymbol = getCurrencySymbol(client.currency || 'USD');
+                const activeType = client.accountType === 'REAL' ? '🔥 REAL' : '🧪 PRACTICE';
                 const status = connected ? '✅' : '❌';
-                msg += `\n${status} *${client.email}*\n💰 Real: ${symbol}${client.realBalance.toLocaleString()}\n`;
+                msg += `\n${status} *${client.email}*\n`;
+                msg += `💵 REAL: ${realSymbol}${client.realBalance.toLocaleString()}\n`;
+                msg += `💵 PRACTICE: ${practiceSymbol}${client.practiceBalance.toLocaleString()}\n`;
+                msg += `🎯 Active: ${activeType} (${activeSymbol}${client.balance.toLocaleString()})\n`;
+                msg += `━━━━━━━━━━━━━━━\n`;
             }
-            ctx.reply(msg, { parse_mode: 'Markdown' });
+            await ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
         this.bot.hears('📊 My Stats', async (ctx) => {

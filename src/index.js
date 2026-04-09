@@ -281,13 +281,53 @@ class TradingBot {
                     try {
                         if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
 
-                        // Get account data from database
-                        const accounts = await this.db.getAccounts(userId);
-                        const accountData = accounts.find(a => a.email === email);
+                        // Get account data from database with retry logic
+                        let accountData = null;
+                        let retries = 0;
+                        const maxRetries = 5;
 
+                        while (!accountData && retries < maxRetries) {
+                            const accounts = await this.db.getAccounts(userId);
+                            accountData = accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
+
+                            if (!accountData && retries < maxRetries - 1) {
+                                logger.warn(`⏳ Waiting for account data for ${email} (attempt ${retries + 1}/${maxRetries})...`);
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                            }
+                            retries++;
+                        }
+
+                        // If still no account data, create fallback from client
                         if (!accountData) {
-                            logger.warn(`⚠️ No account data found for ${email}`);
-                            return;
+                            logger.warn(`⚠️ No account data found for ${email} after ${maxRetries} attempts, creating fallback`);
+
+                            // Create fallback account data from client
+                            accountData = {
+                                email: email,
+                                tradeAmount: 1500,
+                                martingale_enabled: true,
+                                account_type: client.accountType || 'REAL',
+                                autoTraderEnabled: true,
+                                currency: client.currency || 'USD',
+                                balance: client.balance || 0,
+                                stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
+                                martingale: { current_step: 0, current_amount: 1500, loss_streak: 0, base_amount: 1500, initial_balance: 0 }
+                            };
+
+                            // Try to save this fallback to database for future
+                            try {
+                                await this.db.addAccount(userId, email, null);
+                                await this.db.updateAccount(email, {
+                                    tradeAmount: 1500,
+                                    martingale_enabled: true,
+                                    account_type: 'REAL',
+                                    autoTraderEnabled: true,
+                                    currency: client.currency || 'USD'
+                                });
+                                logger.info(`✅ Created fallback account record for ${email}`);
+                            } catch (err) {
+                                logger.warn(`Could not save fallback account for ${email}: ${err.message}`);
+                            }
                         }
 
                         if (accountData.autoTraderEnabled === false) {
