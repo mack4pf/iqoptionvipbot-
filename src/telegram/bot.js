@@ -477,6 +477,23 @@ class TelegramBot {
             ctx.reply(msg, { parse_mode: 'Markdown' });
         });
 
+        // DEBUG: Show all connected accounts
+        this.bot.command('allaccounts', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+
+            let msg = '📋 *ALL CONNECTED ACCOUNTS*\n━━━━━━━━━━━━━━━\n';
+            let count = 0;
+
+            for (const [email, client] of this.userConnections) {
+                const connected = client.connected === true || (client.ws && client.ws.readyState === 1);
+                msg += `\n📧 ${email}\n   Status: ${connected ? '✅ Connected' : '❌ Disconnected'}\n   Balance: ${client.currency} ${client.balance}\n`;
+                count++;
+            }
+
+            msg += `\n━━━━━━━━━━━━━━━\n📊 Total: ${count} accounts`;
+            await ctx.reply(msg, { parse_mode: 'Markdown' });
+        });
+
         this.bot.command('addaccount', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
             const args = ctx.message.text.split(' ');
@@ -594,7 +611,8 @@ class TelegramBot {
                 helpMsg += '/addchannel - Add channel\n';
                 helpMsg += '/removechannel - Remove channel\n';
                 helpMsg += '/setduration 3/5 - Trade duration\n';
-                helpMsg += '/connections - Show connections\n\n';
+                helpMsg += '/connections - Show connections\n';
+                helpMsg += '/allaccounts - Show all connected accounts\n\n';
             }
 
             helpMsg += '━━━━━━━━━━━━━━━━━━━━━━━━━\n';
