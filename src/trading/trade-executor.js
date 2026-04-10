@@ -37,9 +37,6 @@ class TradeExecutor {
     async execute(userId, client, signal, account) {
         const accountKey = client.email || userId;
 
-        // ========== NO OPEN POSITION CHECK ==========
-        // ========== NO COOLDOWN CHECK ==========
-
         console.log(`🔍 Step 1: Checking connection status for ${accountKey}`);
         console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
 
@@ -103,6 +100,8 @@ class TradeExecutor {
         const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
         const investment = position.invest || tradeInfo.amount;
 
+        logger.info(`📊 [${accountKey}] Trade result: isWin=${isWin}, investment=${investment}, profit=${position.close_profit || 0}`);
+
         this.openPositions.delete(accountKey);
         this.lastTradeCloseTime.set(accountKey, Date.now());
 
@@ -113,8 +112,10 @@ class TradeExecutor {
             const state = this.martingale.getState(accountKey, account, tradeInfo.currency, baseAmount);
 
             if (isWin) {
+                logger.info(`✅ [${accountKey}] Win detected. Resetting martingale.`);
                 this.martingale.reset(accountKey, state);
             } else {
+                logger.info(`❌ [${accountKey}] Loss detected. Advancing martingale.`);
                 this.martingale.advance(accountKey, state);
             }
 
@@ -128,8 +129,10 @@ class TradeExecutor {
 
             if (tradeInfo.email) {
                 await this.db.updateAccount(tradeInfo.email, { martingale: martingaleUpdate });
+                logger.info(`💾 [${accountKey}] Saved martingale state to account: step=${state.step}, amount=${state.currentAmount}`);
             } else {
                 await this.db.updateUser(userId, { martingale: martingaleUpdate });
+                logger.info(`💾 [${accountKey}] Saved martingale state to user: step=${state.step}, amount=${state.currentAmount}`);
             }
         }
 

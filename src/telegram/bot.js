@@ -300,20 +300,37 @@ class TelegramBot {
             await ctx.reply(message, { parse_mode: 'Markdown' });
         });
 
-        // SET AMOUNT COMMAND (single account)
+        // SET AMOUNT COMMAND (single account) - FIXED to update both users and accounts
         this.bot.command('setamount', async (ctx) => {
             if (!ctx.state.user) return ctx.reply('❌ Please login first');
             const args = ctx.message.text.split(' ');
             if (args.length < 2) {
+                // Get current amount and currency from user's record or from connected client
                 const current = ctx.state.user.tradeAmount || 1500;
-                const symbol = getCurrencySymbol(ctx.state.user.currency || 'USD');
+                const client = this.userConnections.get(ctx.state.user.email);
+                const currency = client?.realCurrency || ctx.state.user.currency || 'USD';
+                const symbol = getCurrencySymbol(currency);
                 return ctx.reply(`💰 *Current amount:* ${symbol}${current}\n\n/setamount [amount]`, { parse_mode: 'Markdown' });
             }
             const amount = parseFloat(args[1]);
             if (isNaN(amount) || amount <= 0) return ctx.reply('❌ Enter a valid amount');
 
+            // Update users collection
             await this.db.updateUser(ctx.from.id, { tradeAmount: amount, 'martingale.base_amount': amount });
-            const symbol = getCurrencySymbol(ctx.state.user.currency || 'USD');
+
+            // Also update the corresponding account in accounts collection (by email)
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await this.db.updateAccount(user.email, { tradeAmount: amount, 'martingale.base_amount': amount }).catch(() => { });
+                // Update in-memory client
+                const client = this.userConnections.get(user.email);
+                if (client) client.tradeAmount = amount;
+            }
+
+            // Get proper currency symbol
+            const client = this.userConnections.get(ctx.state.user.email);
+            const currency = client?.realCurrency || ctx.state.user.currency || 'USD';
+            const symbol = getCurrencySymbol(currency);
             ctx.reply(`✅ Trade amount set to ${symbol}${amount} (Martingale base reset)`);
         });
 
@@ -321,7 +338,7 @@ class TelegramBot {
             if (!ctx.state.user) return ctx.reply('❌ Please login first.');
             const current = ctx.state.user.notifications_enabled !== false;
             await this.db.updateUser(ctx.from.id, { notifications_enabled: !current });
-            ctx.reply(current ? '🔕 Notifications stopped.' : '🔔 Notifications resumed.');
+            ctx.reply(current ? '🔕 Notifications stopped. You will no longer receive trade alerts.' : '🔔 Notifications resumed. (Commands still work)');
         });
 
         // MARTINGALE COMMAND
@@ -386,7 +403,7 @@ class TelegramBot {
             );
         });
 
-        // NEW: Switch ALL connected accounts to PRACTICE
+        // Switch ALL connected accounts to PRACTICE
         this.bot.command('practiceall', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
@@ -415,7 +432,7 @@ class TelegramBot {
             );
         });
 
-        // NEW: Switch ALL connected accounts to REAL (with confirmation)
+        // Switch ALL connected accounts to REAL (with confirmation)
         this.bot.command('realall', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
