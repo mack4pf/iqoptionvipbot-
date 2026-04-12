@@ -36,6 +36,12 @@ class TradingBot {
         logger.info('🚀 STARTING IQ OPTION TRADING BOT');
         logger.info('='.repeat(60));
 
+        // ========== START WEBHOOK SERVER EARLY ==========
+        // This prevents Render from timing out with a 502 Bad Gateway during slow startup tasks (like connecting to multiple accounts)
+        logger.info('📡 Starting Webhook Server...');
+        this.webhookServer = new WebhookServer(this);
+        this.webhookServer.start();
+
         // Connect to MongoDB
         logger.info('📁 Connecting to MongoDB...');
         this.db = new MongoDB();
@@ -55,11 +61,6 @@ class TradingBot {
 
         logger.info('📦 Initializing Signal Queue...');
         this.signalQueue = new SignalQueue(this);
-
-        // ========== START WEBHOOK SERVER ==========
-        logger.info('📡 Starting Webhook Server...');
-        this.webhookServer = new WebhookServer(this);
-        this.webhookServer.start();
 
         // ========== AUTO-LOGIN PRIMARY ADMIN ACCOUNT ==========
         const primaryAdminId = config.telegram.adminIds[0];
