@@ -18,7 +18,12 @@ async function callWebApp(endpoint, method = 'GET', data = null) {
     const response = await axios(config);
     return response.data;
   } catch (error) {
-    console.error('WebApp API error:', error.response?.data || error.message);
+    const errData = error.response?.data;
+    if (typeof errData === 'string' && errData.includes('<html')) {
+      console.error(`WebApp API error to ${endpoint}: ${error.response?.status} - HTML response (Server might be down or waking up).`);
+    } else {
+      console.error(`WebApp API error to ${endpoint}:`, errData || error.message);
+    }
     throw error;
   }
 }
