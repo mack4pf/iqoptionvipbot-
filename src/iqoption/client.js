@@ -106,12 +106,14 @@ class IQOptionClient {
                 data: { email: this.email, password: this.password },
                 timeout: 30000,
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                     'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Referer': 'https://iqoption.com/en/login',
+                    'Origin': 'https://iqoption.com'
                 }
             };
-
+ 
             if (useProxy) {
                 const httpsAgent = this.getProxyConfig();
                 if (httpsAgent) {
@@ -120,12 +122,25 @@ class IQOptionClient {
                     logger.info(`🔄 User ${this.chatId} using proxy for login`);
                 }
             }
-
-            const response = await axios(requestConfig);
-
+ 
+            let response;
+            try {
+                response = await axios(requestConfig);
+            } catch (err) {
+                // FALLBACK: If 403 with proxy, try WITHOUT proxy
+                if (useProxy && err.response?.status === 403) {
+                    logger.warn(`⚠️ User ${this.chatId} proxy login FORBIDDEN (403). Retrying WITHOUT proxy...`);
+                    delete requestConfig.httpsAgent;
+                    requestConfig.proxy = false;
+                    response = await axios(requestConfig);
+                } else {
+                    throw err;
+                }
+            }
+ 
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
-
+ 
                 if (this.db) {
                     if (this.chatId && !this.email.includes('@')) {
                         await this.db.storeUserSsid(this.chatId, this.ssid);
@@ -134,14 +149,14 @@ class IQOptionClient {
                     }
                     logger.info(`💾 SSID stored for account ${this.email}`);
                 }
-
+ 
                 logger.info(`✅ Account ${this.email} login successful`);
                 this.connect();
                 return true;
             }
             return false;
         } catch (error) {
-            logger.error(`❌ User ${this.chatId} login failed: ${error.message}`);
+            logger.error(`❌ User ${this.chatId} login failed: ${error.response?.data?.message || error.message}`);
             return false;
         }
     }
