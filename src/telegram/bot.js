@@ -929,13 +929,20 @@ class TelegramBot {
         this.bot.hears('💰 Balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
+            
+            await ctx.reply(`📊 *Fetching balances for ${userAccounts.length} accounts...*`, { parse_mode: 'Markdown' });
+            
             let msg = `💰 *Account Balances*\n━━━━━━━━━━━━━━━\n`;
+            
+            // To prevent hanging, we don't 'await' individual refreshes inside the loop
+            // We'll give them 1 second to update in parallel
+            userAccounts.forEach(client => {
+                if (client?.ws?.readyState === 1) client.refreshProfile();
+            });
+            await new Promise(resolve => setTimeout(resolve, 1500)); // One-time wait for all
+
             for (const client of userAccounts) {
                 const connected = client?.ws?.readyState === 1;
-                if (connected) {
-                    client.refreshProfile();
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
                 const realSymbol = getCurrencySymbol(client.realCurrency || 'USD');
                 const practiceSymbol = getCurrencySymbol(client.practiceCurrency || 'USD');
                 const activeSymbol = getCurrencySymbol(client.currency || 'USD');
@@ -1112,13 +1119,19 @@ class TelegramBot {
         const symbol = getCurrencySymbol(client?.currency || user.currency || 'USD');
         const message = `🟢 *NEW TRADE*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeData.asset}\n📈 ${tradeData.direction}\n💰 ${symbol}${tradeData.amount}\n⏱️ ${tradeData.duration} min`;
 
-        try { await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+        try { 
+            await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            await new Promise(r => setTimeout(r, 300)); // Rate limit protection
+        } catch (err) { }
 
         for (const adminId of config.telegram.adminIds) {
             if (adminId && adminId !== userId) {
                 const admin = await this.db.getUser(adminId);
                 if (admin && admin.notifications_enabled !== false) {
-                    try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                    try { 
+                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); 
+                        await new Promise(r => setTimeout(r, 300));
+                    } catch (err) { }
                 }
             }
         }
@@ -1136,13 +1149,19 @@ class TelegramBot {
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
         const message = `${tradeResult.isWin ? '✅' : '❌'} *${tradeResult.isWin ? 'WIN' : 'LOSS'}*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeResult.asset}\n💰 P&L: ${tradeResult.profit}`;
 
-        try { await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+        try { 
+            await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); 
+            await new Promise(r => setTimeout(r, 300));
+        } catch (err) { }
 
         for (const adminId of config.telegram.adminIds) {
             if (adminId && adminId !== userId) {
                 const admin = await this.db.getUser(adminId);
                 if (admin && admin.notifications_enabled !== false) {
-                    try { await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); } catch (err) { }
+                    try { 
+                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); 
+                        await new Promise(r => setTimeout(r, 300));
+                    } catch (err) { }
                 }
             }
         }
