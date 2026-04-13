@@ -41,14 +41,16 @@ module.exports = {
   },
   getCredentials: (email) => callWebApp(`/user/${email}/credentials`),
   updateSettings: (email, settings) => {
-    // Throttle settings updates to prevent spamming the server
+    // Throttle settings updates to prevent spamming the server (min 10s between syncs)
     const now = Date.now();
     const lastSync = settingsSyncCache.get(email) || 0;
     
-    // Always allow if it's an important change (not just balance), 
-    // but for now, we'll throttle all settings updates to be safe.
-    if (now - lastSync < THROTTLE_TTL && settings.balance !== undefined && Object.keys(settings).length === 1) {
-      return Promise.resolve(); 
+    // Only allow if it's been at least 10 seconds
+    if (now - lastSync < THROTTLE_TTL) {
+      // If it's only a balance/currency update, silent drop is fine
+      if (settings.balance !== undefined && Object.keys(settings).length <= 2) {
+        return Promise.resolve();
+      }
     }
     
     settingsSyncCache.set(email, now);
