@@ -313,25 +313,15 @@ class TradingBot {
                     try {
                         if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
 
-                        let accountData = null;
-                        let retries = 0;
-                        const maxRetries = 5;
+                        // Single fast DB lookup - no retry loop (retries cause event loop starvation)
+                        const accounts = await this.db.getAccounts(userId);
+                        let accountData = accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
 
-                        while (!accountData && retries < maxRetries) {
-                            const accounts = await this.db.getAccounts(userId);
-                            accountData = accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
-                            if (!accountData && retries < maxRetries - 1) {
-                                logger.warn(`⏳ Waiting for account data for ${email} (attempt ${retries + 1}/${maxRetries})...`);
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                            }
-                            retries++;
-                        }
-
-                        // If still no account data, use client data (do NOT attempt to save to DB without password)
+                        // If not in accounts collection, fall back to client state immediately
                         if (!accountData) {
-                            logger.warn(`⚠️ No account data found for ${email} after ${maxRetries} attempts, using client data`);
+                            logger.warn(`⚠️ No account data for ${email} - using client state`);
                             accountData = {
-                                email: email,
+                                email,
                                 tradeAmount: client.tradeAmount || 1500,
                                 martingale_enabled: true,
                                 account_type: client.accountType || 'REAL',
@@ -341,7 +331,6 @@ class TradingBot {
                                 stats: { total_trades: 0, wins: 0, losses: 0, total_profit: 0 },
                                 martingale: { current_step: 0, current_amount: client.tradeAmount || 1500, loss_streak: 0, base_amount: client.tradeAmount || 1500, initial_balance: 0 }
                             };
-                            // Do NOT call addAccount with null password
                         }
 
                         if (accountData.autoTraderEnabled === false) {
