@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-const { checkSubscription } = require('../utils/webapp');
 
 class TradeExecutor {
     constructor(db, telegramBot, martingale) {
@@ -40,28 +39,6 @@ class TradeExecutor {
 
         console.log(`🔍 Step 1: Checking connection status for ${accountKey}`);
         console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
-
-        // WebApp Subscription Check
-        const userEmail = client.email || account?.email;
-        if (userEmail) {
-            try {
-                const subStatus = await checkSubscription(userEmail);
-                if (!subStatus.valid) {
-                    logger.warn(`⛔ Subscription invalid for ${userEmail}. Skipping trade.`);
-                    if (this.telegramBot) {
-                        try {
-                            await this.telegramBot.telegram.sendMessage(userId, `⚠️ *Trade Blocked*\nYour subscription is invalid or expired. Please renew it at our website.`, { parse_mode: 'Markdown' });
-                        } catch (telegmErr) {
-                            console.error('Error sending sub invalid message:', telegmErr.message);
-                        }
-                    }
-                    return { success: false, error: 'Subscription invalid' };
-                }
-            } catch (err) {
-                logger.error(`❌ Subscription check failed for ${userEmail}, assuming invalid: ${err.message}`);
-                return { success: false, error: 'Subscription validation failed' };
-            }
-        }
 
         const martingaleEnabled = account?.martingale_enabled !== false;
         const currency = client?.currency || account?.currency || 'USD';

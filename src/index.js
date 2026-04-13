@@ -18,7 +18,7 @@ const SignalQueue = require('./queue/signal-queue');
 const WebhookServer = require('./webhook/server');
 const IQOptionClient = require('./iqoption/client');
 const logger = require('./utils/logger');
-const { getCredentials, updateSettings } = require('./utils/webapp');
+
 
 class TradingBot {
     constructor() {
@@ -74,22 +74,7 @@ class TradingBot {
                     this.db
                 );
                 
-                // Sync admin settings from WebApp
-                try {
-                    const webSettings = await getCredentials(config.iqoption.email);
-                    if (webSettings) {
-                        logger.info(`🌐 Synced admin settings from WebApp for ${config.iqoption.email}`);
-                        await this.db.updateUser(primaryAdminId, {
-                            tradeAmount: webSettings.tradeAmount || 1500,
-                            martingale_enabled: webSettings.martingaleEnabled !== false,
-                            account_type: webSettings.accountType || 'REAL'
-                        });
-                        adminClient.accountType = webSettings.accountType || 'REAL';
-                        adminClient.tradeAmount = webSettings.tradeAmount || 1500;
-                    }
-                } catch (webErr) {
-                    logger.warn(`⚠️ Could not sync admin settings from WebApp: ${webErr.message}`);
-                }
+
 
                 const loggedIn = await adminClient.login();
                 if (loggedIn) {
@@ -107,10 +92,7 @@ class TradingBot {
                     };
                     adminClient.onBalanceChanged = ({ amount, currency, type }) => {
                         this.db.updateUser(primaryAdminId, { balance: amount, currency, account_type: type, connected: true });
-                        // Push balance to WebApp
-                        updateSettings(config.iqoption.email, { balance: amount, currency, accountType: type }).catch(err => 
-                            logger.error(`❌ WebApp admin balance sync failed: ${err.message}`)
-                        );
+
                     };
 
                     logger.info('✅ Admin account auto-logged in successfully');
@@ -138,22 +120,7 @@ class TradingBot {
 
                     const client = new IQOptionClient(acc.email, 'RESTORED_SESSION', acc.owner_id, this.db);
                     
-                    // Sync settings from WebApp before login
-                    try {
-                        const webSettings = await getCredentials(acc.email);
-                        if (webSettings) {
-                            logger.info(`🌐 Synced settings from WebApp for ${acc.email}`);
-                            await this.db.updateAccount(acc.email, {
-                                tradeAmount: webSettings.tradeAmount || 1500,
-                                martingale_enabled: webSettings.martingaleEnabled !== false,
-                                account_type: webSettings.accountType || 'REAL'
-                            });
-                            client.accountType = webSettings.accountType || 'REAL';
-                            client.tradeAmount = webSettings.tradeAmount || 1500;
-                        }
-                    } catch (webErr) {
-                        logger.warn(`⚠️ Could not sync settings from WebApp for ${acc.email}: ${webErr.message}`);
-                    }
+
 
                     const loggedIn = await client.login(true);
 
@@ -176,10 +143,7 @@ class TradingBot {
                         };
                         client.onBalanceChanged = ({ amount, currency, type }) => {
                             this.db.updateAccount(acc.email, { balance: amount, currency, account_type: type, connected: true });
-                            // Push balance to WebApp
-                            updateSettings(acc.email, { balance: amount, currency, accountType: type }).catch(err => 
-                                logger.error(`❌ WebApp balance sync failed for ${acc.email}: ${err.message}`)
-                            );
+
                         };
 
                         this.telegramBot.userConnections.set(acc.email, client);
