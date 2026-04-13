@@ -234,14 +234,18 @@ class IQOptionClient {
         }
 
         logger.info(`🔄 Connecting WebSocket for user ${this.chatId}...`);
-
+ 
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
+        
+        // DATA SAVING OPTIMIZATION:
+        // Attempt DIRECT connection for WebSocket first to save proxy data.
+        // Handover to proxy only if direct fails or if specifically requested.
         const agent = this.getProxyConfig();
-        const wsOptions = agent ? { agent } : {};
-
-        if (agent) {
-            logger.info(`🔄 User ${this.chatId} connecting WebSocket via Proxy`);
-        }
+        
+        // Start with NO agent (Direct) to save data
+        let wsOptions = {}; 
+        
+        logger.info(`🔄 User ${this.chatId} attempting DIRECT WebSocket connection (to save proxy data)...`);
 
         try {
             this.ws = new WebSocket(wsUrl, wsOptions);
@@ -286,7 +290,7 @@ class IQOptionClient {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
                 }
-            }, 10000); // 10s heartbeat for better proxy stability
+            }, 20000); // 20s heartbeat for optimal data saving
  
             this.refreshProfile();
  
@@ -321,17 +325,36 @@ class IQOptionClient {
         this.ws.on('error', (error) => {
             logger.error(`❌ WebSocket error for user ${this.chatId}: ${error.message}`);
             
-            // If this is a proxy error and we haven't successfully connected yet, try DIRECT
-            const isProxyError = error.message.includes('tunneling socket') || error.message.includes('statusCode=402') || error.message.includes('statusCode=403');
-            if (!this.connected && this.ws && !this._isFallbackAttempted && isProxyError) {
+            // FALLBACK LOGIC: 
+            // If Direct failed (or proxy tunneling failed), and we haven't tried the other way, switch.
+            const isConnectError = error.message.includes('tunneling socket') || 
+                                 error.message.includes('statusCode=402') || 
+                                 error.message.includes('statusCode=403') ||
+                                 error.message.includes('ECONNREFUSED');
+
+            if (!this.connected && this.ws && !this._isFallbackAttempted) {
                 this._isFallbackAttempted = true;
-                logger.warn(`⚠️ User ${this.chatId} proxy error during connection. Falling back to DIRECT...`);
-                this.ws.removeAllListeners();
-                try { this.ws.terminate(); } catch (e) { }
+                
                 const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-                this.ws = new WebSocket(wsUrl);
-                this.setupWsHandlers();
-                return;
+                const agent = this.getProxyConfig();
+
+                if (agent && !this.ws.agent) {
+                    // We were trying direct, now try PROXY
+                    logger.warn(`⚠️ Direct connection failed. Falling back to PROXY...`);
+                    this.ws.removeAllListeners();
+                    try { this.ws.terminate(); } catch (e) { }
+                    this.ws = new WebSocket(wsUrl, { agent });
+                    this.setupWsHandlers();
+                    return;
+                } else if (this.ws.agent) {
+                    // We were trying proxy, now try DIRECT
+                    logger.warn(`⚠️ Proxy connection failed. Falling back to DIRECT...`);
+                    this.ws.removeAllListeners();
+                    try { this.ws.terminate(); } catch (e) { }
+                    this.ws = new WebSocket(wsUrl);
+                    this.setupWsHandlers();
+                    return;
+                }
             }
             
             this.connected = false;
