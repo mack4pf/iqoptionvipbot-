@@ -34,8 +34,22 @@ class TradeExecutor {
         return amount;
     }
 
-    async execute(userId, client, signal, account) {
+    async execute(userId, client, signal, accountParam) {
         const accountKey = client.email || userId;
+
+        // 🔄 FORCE RELOAD account from database to get latest martingale state
+        let account = accountParam;
+        if (accountKey) {
+            try {
+                const freshAccount = await this.db.getAccountByEmail(accountKey);
+                if (freshAccount) {
+                    account = freshAccount;
+                    logger.info(`📦 [${accountKey}] Reloaded account from DB. Martingale losses: ${account.martingale?.loss_streak || 0}, step: ${account.martingale?.current_step || 0}`);
+                }
+            } catch (err) {
+                logger.warn(`⚠️ [${accountKey}] Could not reload account from DB: ${err.message}`);
+            }
+        }
 
         console.log(`🔍 Step 1: Checking connection status for ${accountKey}`);
         console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
@@ -50,6 +64,7 @@ class TradeExecutor {
             const baseAmount = account?.tradeAmount || 1500;
             const state = this.martingale.getState(accountKey, account, currency, baseAmount);
             tradeAmount = state.currentAmount;
+            logger.info(`💰 [${accountKey}] Martingale step=${state.step}, losses=${state.losses}, amount=${tradeAmount}`);
         } else {
             tradeAmount = account?.tradeAmount || 1500;
         }
@@ -95,8 +110,20 @@ class TradeExecutor {
         };
     }
 
-    async handleResult(userId, position, tradeInfo, account) {
+    async handleResult(userId, position, tradeInfo, accountParam) {
         const accountKey = tradeInfo.email || userId;
+
+        // 🔄 Reload account from DB to ensure we update the correct state
+        let account = accountParam;
+        if (accountKey) {
+            try {
+                const freshAccount = await this.db.getAccountByEmail(accountKey);
+                if (freshAccount) account = freshAccount;
+            } catch (err) {
+                logger.warn(`⚠️ [${accountKey}] Could not reload account for result handling: ${err.message}`);
+            }
+        }
+
         const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
         const investment = position.invest || tradeInfo.amount;
 
