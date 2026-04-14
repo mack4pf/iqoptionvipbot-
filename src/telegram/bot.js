@@ -1,10 +1,11 @@
 const { Telegraf, Markup, session } = require('telegraf');
 const config = require('../config');
 const logger = require('../utils/logger');
+
 const { getCurrencySymbol } = require('../utils/helpers');
 const IQOptionClient = require('../iqoption/client');
 const { default: PQueue } = require('p-queue');
-
+const { getCredentials, updateSettings } = require('../utils/webapp');
 
 class TelegramBot {
     constructor(db, tradingBot) {
@@ -134,7 +135,23 @@ class TelegramBot {
             try {
                 const existingUser = await this.db.getUser(ctx.from.id);
                 if (existingUser) {
-
+                    // Sync settings on start if user exists and has email
+                    if (existingUser.email) {
+                        try {
+                            const webSettings = await getCredentials(existingUser.email);
+                            if (webSettings) {
+                                const { tradeAmount, martingaleEnabled, accountType } = webSettings;
+                                await this.db.updateUser(ctx.from.id, {
+                                    tradeAmount: tradeAmount || existingUser.tradeAmount,
+                                    martingale_enabled: martingaleEnabled !== undefined ? martingaleEnabled : existingUser.martingale_enabled,
+                                    account_type: accountType || existingUser.account_type
+                                });
+                                logger.info(`🔄 Synced settings from web for ${existingUser.email} on /start`);
+                            }
+                        } catch (err) {
+                            logger.warn(`⚠️ Failed to sync web settings on /start for ${existingUser.email}: ${err.message}`);
+                        }
+                    }
                     return ctx.reply('✅ You are already registered!');
                 }
 
@@ -192,7 +209,26 @@ class TelegramBot {
 
                 if (!user && pendingCode) {
                     try {
+                        // Fetch initial settings from web if available
+                        let initialSettings = {};
+                        try {
+                            const webSettings = await getCredentials(email);
+                            if (webSettings) {
+                                initialSettings = {
+                                    tradeAmount: webSettings.tradeAmount,
+                                    martingale_enabled: webSettings.martingaleEnabled,
+                                    account_type: webSettings.accountType
+                                };
+                            }
+                        } catch (e) { }
+
                         await this.db.registerUserWithCode(ctx.from.id, email, password, pendingCode);
+
+                        // Apply web settings if any
+                        if (Object.keys(initialSettings).length > 0) {
+                            await this.db.updateUser(ctx.from.id, initialSettings);
+                        }
+
                         user = await this.db.getUser(ctx.from.id);
                         ctx.session.pendingCode = null;
                     } catch (regError) {
@@ -205,7 +241,25 @@ class TelegramBot {
                 iqClient.accountType = 'REAL';
                 iqClient.refreshProfile();
 
+                // Sync settings from WebApp
+                try {
+                    const webSettings = await getCredentials(email);
+                    if (webSettings) {
+                        logger.info(`🌐 Synced settings from WebApp for ${email}`);
+                        const settingsToUpdate = {
+                            tradeAmount: webSettings.tradeAmount || 1500,
+                            martingale_enabled: webSettings.martingaleEnabled !== false,
+                            account_type: webSettings.accountType || 'REAL',
+                            currency: webSettings.currency || iqClient.realCurrency || 'USD'
+                        };
 
+                        await this.db.updateAccount(email, settingsToUpdate);
+                        iqClient.accountType = settingsToUpdate.account_type;
+                        iqClient.tradeAmount = settingsToUpdate.tradeAmount;
+                    }
+                } catch (webErr) {
+                    logger.warn(`⚠️ Could not sync settings from WebApp for ${email}: ${webErr.message}`);
+                }
 
                 // Wait for profile to load
                 let retries = 0;
@@ -232,7 +286,10 @@ class TelegramBot {
                 iqClient.onBalanceChanged = ({ amount, currency, type }) => {
                     this.db.updateAccount(email, { balance: amount, currency, account_type: type, connected: true });
                     logger.info(`💰 Account ${email}: Balance updated to ${currency}${amount}`);
-
+                    // Push balance to WebApp
+                    updateSettings(email, { balance: amount, currency, accountType: type }).catch(err =>
+                        logger.error(`❌ WebApp balance sync failed for ${email}: ${err.message}`)
+                    );
                 };
 
                 this.userConnections.set(email, iqClient);
@@ -335,8 +392,11 @@ class TelegramBot {
                 // Update in-memory client
                 const client = this.userConnections.get(user.email);
                 if (client) client.tradeAmount = amount;
-                
 
+                // Push to WebApp
+                updateSettings(user.email, { tradeAmount: amount }).catch(err =>
+                    logger.error(`❌ WebApp settings sync failed for ${user.email}: ${err.message}`)
+                );
             }
 
             // Get proper currency symbol
@@ -401,7 +461,10 @@ class TelegramBot {
                 client.accountType = 'PRACTICE';
                 client.refreshProfile();
                 await this.db.updateAccount(client.email, { account_type: 'PRACTICE' });
-
+                // Push to WebApp
+                updateSettings(client.email, { accountType: 'PRACTICE' }).catch(err =>
+                    logger.error(`❌ WebApp settings sync failed for ${client.email}: ${err.message}`)
+                );
             }
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
             ctx.reply(`✅ Switched ${userAccounts.length} accounts to PRACTICE account`);
@@ -763,8 +826,10 @@ class TelegramBot {
             await this.db.updateUser(ctx.from.id, { martingale_enabled: true });
             const user = await this.db.getUser(ctx.from.id);
             if (user && user.email) {
-                await this.db.updateAccount(user.email, { martingale_enabled: true }).catch(() => {});
-
+                await this.db.updateAccount(user.email, { martingale_enabled: true }).catch(() => { });
+                updateSettings(user.email, { martingaleEnabled: true }).catch(err =>
+                    logger.error(`❌ WebApp martingale sync failed for ${user.email}: ${err.message}`)
+                );
             }
             await ctx.editMessageText('✅ Martingale is now ON');
         });
@@ -774,8 +839,10 @@ class TelegramBot {
             await this.db.updateUser(ctx.from.id, { martingale_enabled: false });
             const user = await this.db.getUser(ctx.from.id);
             if (user && user.email) {
-                await this.db.updateAccount(user.email, { martingale_enabled: false }).catch(() => {});
-
+                await this.db.updateAccount(user.email, { martingale_enabled: false }).catch(() => { });
+                updateSettings(user.email, { martingaleEnabled: false }).catch(err =>
+                    logger.error(`❌ WebApp martingale sync failed for ${user.email}: ${err.message}`)
+                );
             }
             await ctx.editMessageText('🔴 Martingale is now OFF');
         });
@@ -834,8 +901,13 @@ class TelegramBot {
                 client.accountType = 'REAL';
                 client.refreshProfile();
                 await this.db.updateAccount(client.email, { account_type: 'REAL' });
-                
 
+                // Sync to web
+                try {
+                    await updateSettings(client.email, { accountType: 'REAL' });
+                } catch (err) {
+                    logger.warn(`⚠️ Failed to sync account type to web for ${client.email}: ${err.message}`);
+                }
             }
             await this.db.updateUser(ctx.from.id, { account_type: 'REAL' });
             ctx.reply(`✅ Switched ${userAccounts.length} accounts to REAL`);
@@ -858,11 +930,11 @@ class TelegramBot {
         this.bot.hears('💰 Balance', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Not connected');
-            
+
             await ctx.reply(`📊 *Fetching balances for ${userAccounts.length} accounts...*`, { parse_mode: 'Markdown' });
-            
+
             let msg = `💰 *Account Balances*\n━━━━━━━━━━━━━━━\n`;
-            
+
             // To prevent hanging, we don't 'await' individual refreshes inside the loop
             // We'll give them 1 second to update in parallel
             userAccounts.forEach(client => {
@@ -904,15 +976,20 @@ class TelegramBot {
         this.bot.hears('📈 Practice Mode', async (ctx) => {
             const userAccounts = this.getClientsByUserId(ctx.from.id);
             if (userAccounts.length === 0) return ctx.reply('❌ Login first');
-            
+
             for (const client of userAccounts) {
                 client.accountType = 'PRACTICE';
                 client.refreshProfile();
                 await this.db.updateAccount(client.email, { account_type: 'PRACTICE' });
-                
 
+                // Sync to web
+                try {
+                    await updateSettings(client.email, { accountType: 'PRACTICE' });
+                } catch (err) {
+                    logger.warn(`⚠️ Failed to sync account type to web for ${client.email}: ${err.message}`);
+                }
             }
-            
+
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
             ctx.reply('✅ Switched to PRACTICE');
         });
@@ -1043,7 +1120,7 @@ class TelegramBot {
         const symbol = getCurrencySymbol(client?.currency || user.currency || 'USD');
         const message = `🟢 *NEW TRADE*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeData.asset}\n📈 ${tradeData.direction}\n💰 ${symbol}${tradeData.amount}\n⏱️ ${tradeData.duration} min`;
 
-        try { 
+        try {
             await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
             await new Promise(r => setTimeout(r, 300)); // Rate limit protection
         } catch (err) { }
@@ -1052,8 +1129,8 @@ class TelegramBot {
             if (adminId && adminId !== userId) {
                 const admin = await this.db.getUser(adminId);
                 if (admin && admin.notifications_enabled !== false) {
-                    try { 
-                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); 
+                    try {
+                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
                         await new Promise(r => setTimeout(r, 300));
                     } catch (err) { }
                 }
@@ -1073,8 +1150,8 @@ class TelegramBot {
         const emailLabel = accountEmail ? `\n📧 Account: ${accountEmail}` : '';
         const message = `${tradeResult.isWin ? '✅' : '❌'} *${tradeResult.isWin ? 'WIN' : 'LOSS'}*${emailLabel}\n━━━━━━━━━━━━━━━\n📊 ${tradeResult.asset}\n💰 P&L: ${tradeResult.profit}`;
 
-        try { 
-            await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' }); 
+        try {
+            await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
             await new Promise(r => setTimeout(r, 300));
         } catch (err) { }
 
@@ -1082,8 +1159,8 @@ class TelegramBot {
             if (adminId && adminId !== userId) {
                 const admin = await this.db.getUser(adminId);
                 if (admin && admin.notifications_enabled !== false) {
-                    try { 
-                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' }); 
+                    try {
+                        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
                         await new Promise(r => setTimeout(r, 300));
                     } catch (err) { }
                 }

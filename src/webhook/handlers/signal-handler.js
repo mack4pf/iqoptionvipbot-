@@ -3,29 +3,27 @@ const logger = require('../../utils/logger');
 class SignalHandler {
     constructor(tradingBot) {
         this.tradingBot = tradingBot;
-        this.lastSignalTime = new Map(); // key = `${chat_id}_${ticker}` → timestamp
-        this.cooldownMinutes = 5; // adjustable
+        // Global cache for all assets (not per user) to detect results
+        this.recentSignals = new Map(); // key = ticker, value = timestamp
+        this.resultWindowMinutes = 6; // configurable
     }
 
     async handle(signalData) {
         let { chat_id, signal, position, ticker, price, result } = signalData;
 
-        // 1. Ignore result messages
-        if (result && result !== '') {
-            logger.info(`⏸️ Ignoring result message (trade result): ${result}`);
-            return { ignored: true, reason: 'result_message' };
-        }
+        // ❌ REMOVED the result field check entirely.
+        // We rely on time-based deduplication instead.
 
         logger.info(`🚨 Incoming TradingView Webhook:`);
         logger.info(`   Raw Ticker: ${ticker} | Signal: ${signal} | Chat: ${chat_id}`);
 
-        // 2. Clean ticker
+        // Clean ticker
         if (ticker && ticker.includes(':')) {
             ticker = ticker.split(':').pop();
         }
         ticker = ticker?.toUpperCase().trim().replace(/\.|\s/g, '-');
 
-        // 3. Determine direction
+        // Determine direction
         let direction = null;
         const rawSignal = signal?.toLowerCase().trim();
 
@@ -38,27 +36,35 @@ class SignalHandler {
             return { error: 'Unknown signal type' };
         }
 
-        // 4. Cooldown per (chat_id, asset)
-        const key = `${chat_id || 'default'}_${ticker}`;
         const now = Date.now();
-        const lastTime = this.lastSignalTime.get(key);
-        const cooldownMs = this.cooldownMinutes * 60 * 1000;
+        const windowMs = this.resultWindowMinutes * 60 * 1000;
 
-        if (lastTime && (now - lastTime) < cooldownMs) {
-            const remaining = Math.ceil((cooldownMs - (now - lastTime)) / 1000);
-            logger.info(`⏸️ Duplicate signal for ${key} ignored (${remaining}s remaining in cooldown)`);
-            return { ignored: true, reason: 'cooldown' };
+        // 🔍 Check if this ticker had a recent alert (within 6 minutes)
+        const lastTime = this.recentSignals.get(ticker);
+        if (lastTime && (now - lastTime) < windowMs) {
+            const secondsAgo = Math.round((now - lastTime) / 1000);
+            logger.info(`⏸️ Ignoring result for ${ticker} (last alert was ${secondsAgo}s ago)`);
+            // Still record this result to extend the window if needed? Optional.
+            return { ignored: true, reason: 'result_detected' };
         }
 
-        this.lastSignalTime.set(key, now);
+        // ✅ It's a fresh signal – record it and proceed
+        this.recentSignals.set(ticker, now);
 
-        // 5. Get duration from DB
+        // Periodic cleanup to prevent memory bloat
+        if (this.recentSignals.size > 100) {
+            for (const [key, ts] of this.recentSignals) {
+                if (now - ts > windowMs * 2) this.recentSignals.delete(key);
+            }
+        }
+
+        // Get duration from DB
         const duration = await this.tradingBot.db.getGlobalSetting('trade_duration', 5);
         const signalId = `TV_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
         logger.info(`🚀 Processing ${direction} on ${ticker} (${duration}m)`);
 
-        // 6. Queue or execute
+        // Execute signal
         if (this.tradingBot && this.tradingBot.signalQueue) {
             this.tradingBot.signalQueue.addSignal({
                 asset: ticker,
