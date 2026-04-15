@@ -127,7 +127,6 @@ class IQOptionClient {
             try {
                 response = await axios(requestConfig);
             } catch (err) {
-                // FALLBACK: If Proxy error (403, 402, or Bridge/Tunneling error), try WITHOUT proxy
                 const isProxyError = err.response?.status === 403 || err.response?.status === 402 || err.message?.includes('tunneling socket');
                 if (useProxy && isProxyError) {
                     logger.warn(`⚠️ User ${this.chatId} proxy failed (${err.response?.status || err.message}). Retrying login DIRECT...`);
@@ -217,7 +216,6 @@ class IQOptionClient {
 
         if (this._isReconnecting) return;
         this._isReconnecting = true;
-        this._isFallbackAttempted = false;
 
         if (this.pingInterval) {
             clearInterval(this.pingInterval);
@@ -233,49 +231,21 @@ class IQOptionClient {
             this.ws = null;
         }
 
-        logger.info(`🔄 Connecting WebSocket for user ${this.chatId}...`);
- 
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-        
-        // DATA SAVING OPTIMIZATION:
-        // Attempt DIRECT connection for WebSocket first to save proxy data.
-        // Handover to proxy only if direct fails or if specifically requested.
-        const agent = this.getProxyConfig();
-        
-        // Start with NO agent (Direct) to save data
-        let wsOptions = {}; 
-        
-        logger.info(`🔄 User ${this.chatId} attempting DIRECT WebSocket connection (to save proxy data)...`);
+
+        // 🔥 DATA SAVING: ALWAYS use DIRECT WebSocket connection (NO PROXY)
+        // The login already went through proxy, so this is safe and saves GBs.
+        logger.info(`🔄 Connecting WebSocket for user ${this.chatId} DIRECT (proxy bypassed to save data)...`);
 
         try {
-            this.ws = new WebSocket(wsUrl, wsOptions);
-            
-            // Handle proxy handshake failure (like 402/403/tunneling)
-            this.ws.on('unexpected-response', (req, res) => {
-                if (agent && (res.statusCode === 402 || res.statusCode === 403)) {
-                    logger.warn(`⚠️ User ${this.chatId} proxy failed with ${res.statusCode}. Falling back to DIRECT connection...`);
-                    this.ws.removeAllListeners();
-                    try { this.ws.terminate(); } catch (e) { }
-                    this.ws = new WebSocket(wsUrl); // Try again without proxy
-                    this.setupWsHandlers(); // Re-attach handlers to the new socket
-                }
-            });
-
+            this.ws = new WebSocket(wsUrl); // No proxy agent
             this.setupWsHandlers();
             this._isReconnecting = false;
         } catch (e) {
             logger.error(`❌ WebSocket creation failed for ${this.chatId}: ${e.message}`);
-            // If creation failed due to proxy, try one last time direct
-            if (agent && e.message.includes('tunneling socket')) {
-                logger.warn(`⚠️ User ${this.chatId} tunneling failed. Falling back to DIRECT connection...`);
-                try {
-                    this.ws = new WebSocket(wsUrl);
-                    this.setupWsHandlers();
-                } catch (innerError) {
-                    logger.error(`❌ Direct WebSocket fallback failed: ${innerError.message}`);
-                }
-            }
             this._isReconnecting = false;
+            // Schedule reconnect
+            this._reconnectTimer = setTimeout(() => this.connect(), 10000);
         }
     }
  
@@ -288,9 +258,9 @@ class IQOptionClient {
  
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.send({ name: 'heartbeat', msg: Date.now() });
+                    this.ws.ping(); // Use native ping (2 bytes) to keep connection alive
                 }
-            }, 20000); // 20s heartbeat for optimal data saving
+            }, 45000); // 45s heartbeat
  
             this.refreshProfile();
  
@@ -324,46 +294,11 @@ class IQOptionClient {
  
         this.ws.on('error', (error) => {
             logger.error(`❌ WebSocket error for user ${this.chatId}: ${error.message}`);
-            
-            // FALLBACK LOGIC: 
-            // If Direct failed (or proxy tunneling failed), and we haven't tried the other way, switch.
-            const isConnectError = error.message.includes('tunneling socket') || 
-                                 error.message.includes('statusCode=402') || 
-                                 error.message.includes('statusCode=403') ||
-                                 error.message.includes('ECONNREFUSED');
-
-            if (!this.connected && this.ws && !this._isFallbackAttempted) {
-                this._isFallbackAttempted = true;
-                
-                const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-                const agent = this.getProxyConfig();
-
-                if (agent && !this.ws.agent) {
-                    // We were trying direct, now try PROXY
-                    logger.warn(`⚠️ Direct connection failed. Falling back to PROXY...`);
-                    this.ws.removeAllListeners();
-                    try { this.ws.terminate(); } catch (e) { }
-                    this.ws = new WebSocket(wsUrl, { agent });
-                    this.setupWsHandlers();
-                    return;
-                } else if (this.ws.agent) {
-                    // We were trying proxy, now try DIRECT
-                    logger.warn(`⚠️ Proxy connection failed. Falling back to DIRECT...`);
-                    this.ws.removeAllListeners();
-                    try { this.ws.terminate(); } catch (e) { }
-                    this.ws = new WebSocket(wsUrl);
-                    this.setupWsHandlers();
-                    return;
-                }
-            }
-            
             this.connected = false;
         });
  
-        this.ws.on('close', () => {
-            if (!this.connected && !this._isReconnecting) return;
- 
-            logger.warn(`🔌 WebSocket closed for user ${this.chatId}`);
+        this.ws.on('close', (code, reason) => {
+            logger.warn(`🔌 WebSocket closed for user ${this.chatId} | Code: ${code}`);
             this.connected = false;
             this._isReconnecting = false;
  
@@ -374,7 +309,7 @@ class IQOptionClient {
                 this._reconnectTimer = setTimeout(() => {
                     logger.info(`🔄 Reconnecting user ${this.chatId}...`);
                     this.connect();
-                }, 10000); // Increased backoff to 10s to avoid hammering on errors
+                }, 10000);
             }
         });
     }
@@ -427,7 +362,6 @@ class IQOptionClient {
         logger.info(`💰 User ${this.chatId} - REAL: ${this.realCurrency} ${this.realBalance} | PRACTICE: ${this.practiceCurrency} ${this.practiceBalance}`);
         logger.info(`🎯 Active: ${this.accountType} (${this.currency}) - ID: ${this.balanceId}`);
 
-        // Initialize last emited variables if they don't exist
         if (this._lastEmittedBalance === undefined) this._lastEmittedBalance = null;
         if (this._lastEmittedType === undefined) this._lastEmittedType = null;
 
@@ -487,7 +421,6 @@ class IQOptionClient {
     handlePositionUpdate(position) {
         const tradeId = position.id || position.external_id;
 
-        // Deduplicate - prevent multiple notifications for same trade
         if (this.processedTrades.has(tradeId)) {
             return;
         }
@@ -641,17 +574,6 @@ class IQOptionClient {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(data));
         }
-    }
-
-    disconnect() {
-        if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
-        if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
-        if (this.ws) {
-            this.ws.removeAllListeners();
-            try { this.ws.close(); } catch (e) { }
-            this.ws = null;
-        }
-        this.connected = false;
     }
 }
 
