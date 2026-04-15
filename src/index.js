@@ -37,7 +37,6 @@ class TradingBot {
         logger.info('='.repeat(60));
 
         // ========== START WEBHOOK SERVER EARLY ==========
-        // This prevents Render from timing out with a 502 Bad Gateway during slow startup tasks (like connecting to multiple accounts)
         logger.info('📡 Starting Webhook Server...');
         this.webhookServer = new WebhookServer(this);
         this.webhookServer.start();
@@ -46,7 +45,7 @@ class TradingBot {
         logger.info('📁 Connecting to MongoDB...');
         this.db = new MongoDB();
         await this.db.connect();
-        await this.db.clearAllSessions();
+        await this.db.clearAllSessions(); // 🧹 Wipe all old SSIDs
         await this.db.migrateRealAndNotifications();
 
         // Initialize Martingale
@@ -63,7 +62,7 @@ class TradingBot {
         logger.info('📦 Initializing Signal Queue...');
         this.signalQueue = new SignalQueue(this);
 
-        // ========== AUTO-LOGIN PRIMARY ADMIN ACCOUNT ==========
+        // ========== AUTO-LOGIN PRIMARY ADMIN ACCOUNT (OPTIONAL) ==========
         const primaryAdminId = config.telegram.adminIds[0];
         if (primaryAdminId && config.iqoption.email && config.iqoption.password) {
             logger.info(`🔌 Auto-logging primary admin account (${primaryAdminId})...`);
@@ -74,8 +73,6 @@ class TradingBot {
                     primaryAdminId,
                     this.db
                 );
-                
-
 
                 const loggedIn = await adminClient.login();
                 if (loggedIn) {
@@ -93,7 +90,6 @@ class TradingBot {
                     };
                     adminClient.onBalanceChanged = ({ amount, currency, type }) => {
                         this.db.updateUser(primaryAdminId, { balance: amount, currency, account_type: type, connected: true });
-
                     };
 
                     logger.info('✅ Admin account auto-logged in successfully');
@@ -105,117 +101,12 @@ class TradingBot {
             }
         }
 
-        // ========== FORCE RECONNECT ALL SUB-ACCOUNTS FROM DATABASE ==========
-        logger.info('👥 FORCE RECONNECTING ALL SUB-ACCOUNTS FROM DATABASE...');
-
-        try {
-            const allAccounts = await this.db.getAllAccounts();
-            logger.info(`📊 Found ${allAccounts.length} sub-accounts in database`);
-
-            let connectedCount = 0;
-            let failedCount = 0;
-
-            for (const acc of allAccounts) {
-                try {
-                    logger.info(`🔄 Attempting to restore account: ${acc.email}`);
-
-                    const client = new IQOptionClient(acc.email, 'RESTORED_SESSION', acc.owner_id, this.db);
-                    
-
-
-                    const loggedIn = await client.login(true);
-
-                    if (loggedIn) {
-                        client.accountType = 'REAL';
-                        client.refreshProfile();
-
-                        client.onTradeOpened = (tradeData) => {
-                            this.telegramBot.handleTradeOpened(acc.owner_id, tradeData, acc.email);
-                        };
-                        client.onTradeClosed = async (tradeResult) => {
-                            this.telegramBot.handleTradeClosed(acc.owner_id, tradeResult, acc.email);
-                            try {
-                                const accounts = await this.db.getAccounts(acc.owner_id);
-                                const accountData = accounts.find(a => a.email === acc.email);
-                                if (accountData) {
-                                    await this.tradeExecutor.handleResult(acc.owner_id, { raw_event: { result: tradeResult.isWin ? 'win' : 'loss' } }, tradeResult, accountData);
-                                }
-                            } catch (err) { logger.error(`Martingale update error for ${acc.email}:`, err.message); }
-                        };
-                        client.onBalanceChanged = ({ amount, currency, type }) => {
-                            this.db.updateAccount(acc.email, { balance: amount, currency, account_type: type, connected: true });
-
-                        };
-
-                        this.telegramBot.userConnections.set(acc.email, client);
-                        await this.db.updateAccount(acc.email, { connected: true });
-
-                        connectedCount++;
-                        logger.info(`✅ Successfully restored account: ${acc.email}`);
-                    } else {
-                        failedCount++;
-                        logger.warn(`❌ Failed to restore account: ${acc.email} - login returned false`);
-                    }
-
-                    await new Promise(resolve => setTimeout(resolve, 500));
-
-                } catch (err) {
-                    failedCount++;
-                    logger.error(`❌ Error restoring account ${acc.email}: ${err.message}`);
-                }
-            }
-
-            logger.info(`✅ Sub-account restoration complete: ${connectedCount} connected, ${failedCount} failed`);
-            logger.info(`📊 Total accounts in userConnections: ${this.telegramBot.userConnections.size}`);
-
-        } catch (error) {
-            logger.error('❌ Error during sub-account restoration:', error);
-        }
-
-        // ========== ALSO CHECK FOR ACCOUNTS IN USERS COLLECTION (LEGACY) ==========
-        logger.info('👥 Checking for legacy users in users collection...');
-        try {
-            const allUsers = await this.db.getAllUsers();
-            let legacyConnected = 0;
-
-            for (const user of allUsers) {
-                if (config.telegram.adminIds.includes(user._id)) continue;
-                if (this.telegramBot.userConnections.has(user.email)) continue;
-
-                if (user.ssid) {
-                    try {
-                        const client = new IQOptionClient(user.email, 'RESTORED_SESSION', user._id, this.db);
-                        const loggedIn = await client.login(true);
-                        if (loggedIn) {
-                            client.accountType = 'REAL';
-                            client.refreshProfile();
-                            client.onTradeOpened = (tradeData) => {
-                                this.telegramBot.handleTradeOpened(user._id, tradeData);
-                            };
-                            client.onTradeClosed = async (tradeResult) => {
-                                this.telegramBot.handleTradeClosed(user._id, tradeResult);
-                            };
-                            client.onBalanceChanged = ({ amount, currency, type }) => {
-                                this.db.updateUser(user._id, { balance: amount, currency, account_type: type, connected: true });
-                            };
-                            this.telegramBot.userConnections.set(user.email, client);
-                            legacyConnected++;
-                            logger.info(`✅ Restored legacy user: ${user.email}`);
-                        }
-                    } catch (err) {
-                        logger.warn(`Failed to restore legacy user ${user.email}: ${err.message}`);
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-            }
-            logger.info(`✅ Legacy users restored: ${legacyConnected}`);
-        } catch (error) {
-            logger.error('Error restoring legacy users:', error);
-        }
+        // ❌ ALL SUB-ACCOUNT AND LEGACY USER RESTORATION LOOPS REMOVED
+        // No automatic connections – users must manually /login each account
 
         logger.info('='.repeat(60));
         logger.info('🎯 BOT IS OPERATIONAL');
-        logger.info(`📊 Total connected accounts: ${this.telegramBot.userConnections.size}`);
+        logger.info(`📊 Connected accounts: ${this.telegramBot.userConnections.size} (manual logins only)`);
         logger.info('✅ TradingView webhook: POST /api/tradingview');
         logger.info('✅ Telegram bot is running');
         logger.info('='.repeat(60));
@@ -278,11 +169,9 @@ class TradingBot {
                     try {
                         if (index > 0) await new Promise(resolve => setTimeout(resolve, index * 10));
 
-                        // Single fast DB lookup - no retry loop (retries cause event loop starvation)
                         const accounts = await this.db.getAccounts(userId);
                         let accountData = accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
 
-                        // If not in accounts collection, fall back to client state immediately
                         if (!accountData) {
                             logger.warn(`⚠️ No account data for ${email} - using client state`);
                             accountData = {
