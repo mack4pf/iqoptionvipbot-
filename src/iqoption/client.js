@@ -61,25 +61,6 @@ class IQOptionClient {
         };
     }
 
-    async restoreSession() {
-        if (!this.db) return false;
-        try {
-            let ssid = null;
-            if (this.chatId && !this.email.includes('@')) {
-                ssid = await this.db.getUserSsid(this.chatId);
-            } else {
-                ssid = await this.db.getAccountSsid(this.email);
-            }
-            if (!ssid) return false;
-            this.ssid = ssid;
-            logger.info(`✅ Account ${this.email}: Session restored`);
-            return true;
-        } catch (error) {
-            logger.warn(`⚠️ Account ${this.email}: Session restore failed: ${error.message}`);
-            return false;
-        }
-    }
-
     getProxyConfig() {
         if (!config.proxy.host) return null;
         return tunnel.httpsOverHttp({
@@ -92,12 +73,8 @@ class IQOptionClient {
     }
 
     async login(useProxy = true) {
-        if (await this.restoreSession()) {
-            this.connect();
-            return true;
-        }
-
-        logger.info(`🔐 User ${this.chatId} logging in...`);
+        // ❌ SESSION RESTORATION COMPLETELY DISABLED – ALWAYS FRESH LOGIN
+        logger.info(`🔐 User ${this.chatId} (${this.email}) logging in...`);
 
         try {
             let requestConfig = {
@@ -141,6 +118,7 @@ class IQOptionClient {
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
  
+                // Store SSID in database (but we won't use it for restoration)
                 if (this.db) {
                     if (this.chatId && !this.email.includes('@')) {
                         await this.db.storeUserSsid(this.chatId, this.ssid);
@@ -234,7 +212,6 @@ class IQOptionClient {
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
 
         // 🔥 DATA SAVING: ALWAYS use DIRECT WebSocket connection (NO PROXY)
-        // The login already went through proxy, so this is safe and saves GBs.
         logger.info(`🔄 Connecting WebSocket for user ${this.chatId} DIRECT (proxy bypassed to save data)...`);
 
         try {
@@ -244,7 +221,6 @@ class IQOptionClient {
         } catch (e) {
             logger.error(`❌ WebSocket creation failed for ${this.chatId}: ${e.message}`);
             this._isReconnecting = false;
-            // Schedule reconnect
             this._reconnectTimer = setTimeout(() => this.connect(), 10000);
         }
     }
@@ -258,9 +234,9 @@ class IQOptionClient {
  
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.ping(); // Use native ping (2 bytes) to keep connection alive
+                    this.ws.ping();
                 }
-            }, 45000); // 45s heartbeat
+            }, 45000);
  
             this.refreshProfile();
  

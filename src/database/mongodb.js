@@ -162,6 +162,21 @@ class MongoDB {
         }
     }
 
+    // 🧹 NEW METHOD: Clear all stored SSIDs on startup
+    async clearAllSessions() {
+        try {
+            const accounts = this.db.collection('accounts');
+            const users = this.db.collection('users');
+            
+            await accounts.updateMany({}, { $unset: { ssid: "" }, $set: { connected: false } });
+            await users.updateMany({}, { $unset: { ssid: "" }, $set: { connected: false } });
+            
+            logger.info('🧹 Cleared all stored SSIDs on startup – users must login fresh');
+        } catch (error) {
+            logger.error('Failed to clear sessions:', error.message);
+        }
+    }
+
     async getUser(chatId) {
         const users = this.db.collection('users');
         return await users.findOne({ _id: chatId.toString() });

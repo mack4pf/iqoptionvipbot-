@@ -46,6 +46,7 @@ class TradingBot {
         logger.info('📁 Connecting to MongoDB...');
         this.db = new MongoDB();
         await this.db.connect();
+        await this.db.clearAllSessions();
         await this.db.migrateRealAndNotifications();
 
         // Initialize Martingale
