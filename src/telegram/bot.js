@@ -212,8 +212,20 @@ class TelegramBot {
                 iqClient.onTradeOpened = (tradeData) => {
                     this.handleTradeOpened(ctx.from.id, tradeData, email);
                 };
-                iqClient.onTradeClosed = (tradeResult) => {
-                    this.handleTradeClosed(ctx.from.id, tradeResult, email);
+                iqClient.onTradeClosed = async (tradeResult) => {
+                    try {
+                        await this.tradingBot.tradeExecutor.handleResult(ctx.from.id, tradeResult, {
+                            email,
+                            amount: tradeResult.investment,
+                            currency: iqClient.currency || iqClient.realCurrency || iqClient.practiceCurrency || 'USD',
+                            asset: tradeResult.asset,
+                            direction: tradeResult.direction,
+                            tradeId: tradeResult.tradeId
+                        });
+                    } catch (err) {
+                        logger.error(`Martingale update error for ${email}: ${err.message}`);
+                        await this.handleTradeClosed(ctx.from.id, tradeResult, email);
+                    }
                 };
                 iqClient.onBalanceChanged = ({ amount, currency, type }) => {
                     this.db.updateAccount(email, { balance: amount, currency, account_type: type, connected: true });
@@ -620,7 +632,21 @@ class TelegramBot {
                 await this.db.addAccount(ctx.from.id, email, password, 'REAL', 1500);
 
                 iqClient.onTradeOpened = (tradeData) => this.handleTradeOpened(ctx.from.id, tradeData, email);
-                iqClient.onTradeClosed = (tradeResult) => this.handleTradeClosed(ctx.from.id, tradeResult, email);
+                iqClient.onTradeClosed = async (tradeResult) => {
+                    try {
+                        await this.tradingBot.tradeExecutor.handleResult(ctx.from.id, tradeResult, {
+                            email,
+                            amount: tradeResult.investment,
+                            currency: iqClient.currency || iqClient.realCurrency || iqClient.practiceCurrency || 'USD',
+                            asset: tradeResult.asset,
+                            direction: tradeResult.direction,
+                            tradeId: tradeResult.tradeId
+                        });
+                    } catch (err) {
+                        logger.error(`Martingale update error for ${email}: ${err.message}`);
+                        await this.handleTradeClosed(ctx.from.id, tradeResult, email);
+                    }
+                };
                 iqClient.onBalanceChanged = ({ amount, currency, type }) => {
                     this.db.updateAccount(email, { balance: amount, currency, account_type: type, connected: true });
                 };

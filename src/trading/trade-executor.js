@@ -124,10 +124,11 @@ class TradeExecutor {
             }
         }
 
-        const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
-        const investment = position.invest || tradeInfo.amount;
+        const isWin = position.isWin === true || position.raw_event?.result === 'win' || position.close_reason === 'win';
+        const investment = position.invest || position.investment || tradeInfo.amount;
+        const closeProfit = position.close_profit ?? position.profit ?? position.raw_event?.profit_amount ?? 0;
 
-        logger.info(`📊 [${accountKey}] Trade result: isWin=${isWin}, investment=${investment}, profit=${position.close_profit || 0}`);
+        logger.info(`📊 [${accountKey}] Trade result: isWin=${isWin}, investment=${investment}, profit=${closeProfit}`);
 
         this.openPositions.delete(accountKey);
         this.lastTradeCloseTime.set(accountKey, Date.now());
@@ -168,8 +169,12 @@ class TradeExecutor {
 
         let profit = 0;
         if (isWin) {
-            const totalPayout = position.close_profit || position.raw_event?.profit_amount || 0;
-            profit = totalPayout > investment ? totalPayout - investment : totalPayout;
+            if (typeof position.profit === 'number') {
+                profit = position.profit;
+            } else {
+                const totalPayout = position.close_profit || position.raw_event?.profit_amount || 0;
+                profit = totalPayout > investment ? totalPayout - investment : totalPayout;
+            }
             stats.wins++;
             stats.total_profit += profit;
         } else {

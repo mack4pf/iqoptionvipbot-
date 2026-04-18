@@ -9,32 +9,40 @@ class Martingale {
         logger.info(`📊 Martingale initialized with multipliers: [${this.multipliers}] (maxSteps=${this.maxSteps})`);
     }
 
+    buildState(dbState, currency, baseAmount) {
+        const losses = Number(dbState.loss_streak) || 0;
+        const step = Math.min(losses, this.multipliers.length - 1);
+
+        return {
+            step,
+            losses,
+            baseAmount,
+            currentAmount: baseAmount * this.multipliers[step],
+            currency,
+            initialBalance: dbState.initial_balance || 0
+        };
+    }
+
     getState(userId, user, currency, baseAmount) {
         const key = userId;
+        const dbState = user?.martingale || {};
+        const resolvedState = this.buildState(dbState, currency, baseAmount);
         const memoryState = this.activeStates.get(key);
-        if (memoryState && memoryState.baseAmount === baseAmount) {
+
+        if (
+            memoryState &&
+            memoryState.baseAmount === resolvedState.baseAmount &&
+            memoryState.losses === resolvedState.losses &&
+            memoryState.step === resolvedState.step &&
+            memoryState.currentAmount === resolvedState.currentAmount
+        ) {
             logger.info(`📊 [${key}] Using memory state: losses=${memoryState.losses}, step=${memoryState.step}, amount=${memoryState.currentAmount}`);
             return memoryState;
         }
 
-        const dbState = user?.martingale || {};
-        let losses = dbState.loss_streak || 0;
-        // FIX: step = losses (capped) – after 2 losses, step=2 → multiplier[2]=2
-        let step = Math.min(losses, this.multipliers.length - 1);
-        let amount = baseAmount * this.multipliers[step];
-
-        const state = {
-            step,
-            losses,
-            baseAmount,
-            currentAmount: amount,
-            currency,
-            initialBalance: dbState.initial_balance || 0
-        };
-
-        this.activeStates.set(key, state);
-        logger.info(`📊 [${key}] DB loaded state: losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}, base=${baseAmount}`);
-        return state;
+        this.activeStates.set(key, resolvedState);
+        logger.info(`📊 [${key}] DB loaded state: losses=${resolvedState.losses}, step=${resolvedState.step}, amount=${resolvedState.currentAmount}, base=${baseAmount}`);
+        return resolvedState;
     }
 
     reset(userId, state) {
